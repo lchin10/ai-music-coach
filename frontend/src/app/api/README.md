@@ -19,9 +19,10 @@
     id (uuid, pk)
     user_id (uuid, fk → profiles)
     title
-    file_url
+    file_path
     created_at
     status ("processing", "ready", "failed")
+    failure_reason
 
 ### sections
 

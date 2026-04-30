@@ -44,21 +44,27 @@ export default function OnboardingPage() {
 
     setFormLoading(true);
 
-    const res = await fetch("/api/onboarding", {
-      method: "POST",
-      body: JSON.stringify({
-        userId: session.user.id,
-        level,
-        years: parseInt(yoe, 10),
-      }),
-    });
+    const years = parseInt(yoe, 10)
+
+    if (years < 0 || years > 80) {
+      console.error({ error: "Invalid years" });
+    }
+  
+    const { error } = await supabase
+      .from("profiles")
+      .update({
+        piano_level: level,
+        years_experience: years,
+        onboarding_complete: true,
+      })
 
     setFormLoading(false);
 
-    if (res.ok) {
-      router.push("/profile");
+    if (error) {
+      console.error({ error });
+      return;
     } else {
-      console.error(await res.json());
+      router.push("/profile");
     }
   };
 

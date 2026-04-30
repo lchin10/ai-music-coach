@@ -15,6 +15,7 @@ export async function GET(req: Request) {
     .single();
 
   if (error) {
+    console.log(userId, error)
     return NextResponse.json({ error: error.message }, { status: 500 });
   }
 
