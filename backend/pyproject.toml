@@ -1,0 +1,17 @@
+[project]
+name = "ai-music-coach-api"
+version = "0.1.0"
+description = "Python FastAPI server for AI Music Coach"
+requires-python = ">=3.10"
+
+dependencies = [
+    "fastapi",
+    "uvicorn[standard]",
+    "pymupdf",
+    "opencv-python",
+    "pillow",
+    "numpy",
+]
+
+[tool.setuptools]
+packages = ["app"]

@@ -1,0 +1,23 @@
+# Python
+__pycache__/
+.Python
+build/
+downloads/
+lib/
+lib64/
+var/
+
+# Virtual Environment
+venv/
+ENV/
+env/
+.venv
+
+# Environment variables
+.env
+.env.local
+
+# IDE
+.DS_Store
+
+*.egg-info
