@@ -8,7 +8,7 @@ dependencies = [
     "fastapi",
     "uvicorn[standard]",
     "pymupdf",
-    "opencv-python",
+    "opencv-python-headless",
     "pillow",
     "numpy",
 ]

@@ -54,15 +54,14 @@ export default function UploadPage() {
 			// Check if the PDF file contains sheet music
 			const formData = new FormData();
 			formData.append("pdf_file", selectedFile);
-			const ocrResponse = await fetch("http://localhost:8000/ocr_check/", {
+			const SheetMusicDetectorResponse = await fetch("http://localhost:8000/sheet_music/detector/", {
 				method: "POST",
 				body: formData,
 			});
 
-			const OcrData = await ocrResponse.json();
-      const OcrBody = JSON.parse(OcrData.body);
-			console.log("OcrData", OcrBody);
-			const isSheetMusic = OcrBody.sheet_music;
+			const detectorData = await SheetMusicDetectorResponse.json();
+      const detectorBody = JSON.parse(detectorData.body);
+			const isSheetMusic = detectorBody.sheet_music;
 
 			if (!isSheetMusic) {
 				throw new Error("Please submit a pdf with sheet music.");

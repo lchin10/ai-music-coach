@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import ocr_check
+from app.routers import sheet_music
 
 frontend_url = os.getenv("FRONTEND_URL")
 
@@ -19,7 +19,7 @@ app.add_middleware(
     allow_headers=["*"],
 )
 
-app.include_router(ocr_check.router)
+app.include_router(sheet_music.router)
 
 
 @app.get("/")
