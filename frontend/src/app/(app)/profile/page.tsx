@@ -17,6 +17,7 @@ type Piece = {
 	title: string;
 	created_at: string;
 	status: string;
+	file_path: string;
 };
 
 export default function ProfilePage() {
@@ -28,6 +29,9 @@ export default function ProfilePage() {
 	const [yoe, setYoe] = useState(profile?.years_experience?.toString() || "");
 	const [onboardingLoading, setOnboardingLoading] = useState(false);
 	const [pieces, setPieces] = useState<Piece[]>([]);
+	const [isDeleting, setIsDeleting] = useState(false);
+
+	const [activeDropdown, setActiveDropdown] = useState<string | null>(null);
 
 	useEffect(() => {
 		const fetchProfile = async () => {
@@ -42,7 +46,7 @@ export default function ProfilePage() {
 			setProfile(res.profile);
 
       // Pieces
-      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status").eq("user_id", session.user.id);
+      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path").eq("user_id", session.user.id);
       if (piecesError) {
         return;
       }
@@ -89,6 +93,33 @@ export default function ProfilePage() {
 		setYoe(profile?.years_experience?.toString() || "");
 	};
 
+	const handleToggleDropdown = (pieceId: string, event: React.MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		setActiveDropdown((current) => (current === pieceId ? null : pieceId));
+	};
+
+	const handleDeletePiece = async (piece: Piece, event: React.MouseEvent<HTMLButtonElement>) => {
+		event.stopPropagation();
+		setActiveDropdown(null);
+
+		if (!session) return;
+
+		setIsDeleting(true);
+
+		const { error: storageError } = await supabase.storage.from("pieces").remove([piece.file_path]);
+		const { error: dbError } = await supabase.from("pieces").delete().eq("id", piece.id);
+
+		setIsDeleting(false);
+
+		if (storageError || dbError) {
+			console.error(storageError || dbError);
+			alert("Unable to delete the file. Please try again.");
+			return;
+		}
+
+		setPieces((current) => current.filter((item) => item.id !== piece.id));
+	};
+
 	if (loading) {
 		return null;
 	}
@@ -112,7 +143,7 @@ export default function ProfilePage() {
 	}
 
 	return (
-		<main className="min-h-screen bg-zinc-950 text-white px-6 py-12">
+		<main className="min-h-screen bg-zinc-950 text-white px-6 py-12" onClick={() => activeDropdown && setActiveDropdown(null)}>
 			<div className="mx-auto flex w-full max-w-5xl flex-col gap-8">
 				<section className="rounded-[2rem] border border-white/10 bg-zinc-900/90 p-10 shadow-xl shadow-black/30 backdrop-blur-xl">
 					<div className="flex flex-col gap-4 sm:flex-row sm:items-center sm:justify-between">
@@ -215,13 +246,33 @@ export default function ProfilePage() {
 						{pieces.length > 0 ? (
 							<>
 								{pieces.map((piece: Piece) => (
-									<div key={piece.id} className="rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6">
+									<div key={piece.id} className="rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6" onClick={(event) => event.stopPropagation()}>
 										<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 											<div>
 												<p className="font-semibold text-white">{piece.title}</p>
 												<p className="text-sm text-zinc-400">Uploaded: {piece.created_at}</p>
 											</div>
-											<span className="rounded-full bg-zinc-800 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">{piece.status}</span>
+											<div className="relative flex items-center gap-2">
+												<span className="rounded-full bg-zinc-800 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">{piece.status}</span>
+												<button
+													type="button"
+													onClick={(event) => handleToggleDropdown(piece.id, event)}
+													className="inline-flex h-10 w-10 items-center justify-center rounded-full border border-white/10 bg-zinc-900 text-xl text-zinc-300 transition hover:border-indigo-500 hover:text-white cursor-pointer"
+												>
+													⋮
+												</button>
+												{activeDropdown === piece.id && (
+													<div className="absolute right-0 top-full z-20 mt-2 w-40 overflow-hidden rounded-3xl border border-white/10 bg-zinc-950 shadow-xl shadow-black/40" onClick={(event) => event.stopPropagation()}>
+														<button
+															type="button"
+															onClick={(event) => handleDeletePiece(piece, event)}
+															className="w-full px-4 py-3 text-left text-sm font-semibold text-rose-400 transition hover:bg-zinc-900 cursor-pointer"
+														>
+															Delete
+														</button>
+													</div>
+												)}
+											</div>
 										</div>
 									</div>
 								))}
