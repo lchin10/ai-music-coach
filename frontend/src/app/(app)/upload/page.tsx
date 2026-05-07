@@ -60,8 +60,7 @@ export default function UploadPage() {
 			});
 
 			const detectorData = await SheetMusicDetectorResponse.json();
-      const detectorBody = JSON.parse(detectorData.body);
-			const isSheetMusic = detectorBody.sheet_music;
+			const isSheetMusic = detectorData.sheet_music;
 
 			if (!isSheetMusic) {
 				throw new Error("Please submit a pdf with sheet music.");
