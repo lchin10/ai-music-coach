@@ -48,7 +48,7 @@ export function Header() {
             onClick={() => router.push("/")}
             className="cursor-pointer"
           >
-            AI PIANO PRACTICE
+            AI MUSIC COACH
           </button>
         </div>
 

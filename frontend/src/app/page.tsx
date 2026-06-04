@@ -16,12 +16,12 @@ export default function Home() {
       <div className="mx-auto flex w-full max-w-6xl flex-col gap-12 px-6 py-12">
         <section className="rounded-[2rem] border border-white/10 bg-zinc-900/90 p-10 shadow-xl shadow-black/30 backdrop-blur-xl">
           <div className="max-w-3xl space-y-6">
-            <p className="text-sm uppercase tracking-[0.3em] text-indigo-300">AI piano practice</p>
+            <p className="text-sm uppercase tracking-[0.3em] text-indigo-300">AI music coach</p>
             <h1 className="text-5xl font-semibold tracking-tight text-white sm:text-6xl">
-              Practice smarter with AI-driven piano coaching.
+              Practice smarter with AI-driven music coaching.
             </h1>
             <p className="max-w-2xl text-lg leading-8 text-zinc-300">
-              Upload sheet music, generate a tailored practice plan, and track every session with progress memory built for real piano learners.
+              Upload sheet music, generate a tailored practice plan, and track every session with progress memory built for real musicians.
             </p>
 
             {!session && (

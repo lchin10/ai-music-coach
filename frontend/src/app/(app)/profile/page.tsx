@@ -246,14 +246,23 @@ export default function ProfilePage() {
 						{pieces.length > 0 ? (
 							<>
 								{pieces.map((piece: Piece) => (
-									<div key={piece.id} className="rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6" onClick={(event) => event.stopPropagation()}>
+									<div
+										key={piece.id}
+										className={`rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6 transition-colors ${piece.status === "ready" ? "cursor-pointer hover:border-indigo-500/40" : ""}`}
+										onClick={(event) => {
+											event.stopPropagation();
+											if (piece.status === "ready") router.push(`/piece/${piece.id}`);
+										}}
+									>
 										<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
 											<div>
 												<p className="font-semibold text-white">{piece.title}</p>
 												<p className="text-sm text-zinc-400">Uploaded: {piece.created_at}</p>
 											</div>
-											<div className="relative flex items-center gap-2">
-												<span className="rounded-full bg-zinc-800 px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] text-zinc-300">{piece.status}</span>
+											<div className="relative flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+												<span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${piece.status === "ready" ? "bg-indigo-500/20 text-indigo-300" : piece.status === "failed" ? "bg-rose-500/20 text-rose-300" : "bg-zinc-800 text-zinc-300"}`}>
+													{piece.status}
+												</span>
 												<button
 													type="button"
 													onClick={(event) => handleToggleDropdown(piece.id, event)}

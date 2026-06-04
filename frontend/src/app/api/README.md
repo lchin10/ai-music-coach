@@ -20,18 +20,22 @@
     user_id (uuid, fk → profiles)
     title
     file_path
-    created_at
+    musicxml_path
     status ("processing", "ready", "failed")
     failure_reason
+    created_at
 
 ### sections
 
     id (uuid, pk)
     piece_id (fk)
+    title
     start_measure
     end_measure
-    difficulty (int or enum)
+    difficulty (0-100)
     notes (text)
+    analysis_data (jsonb)
+    created_at
 
 ### practice_plans
 
@@ -48,8 +52,11 @@
     order_index (int)
     title
     description
-    tempo
-    drill_type (e.g. "hands_separate", "loop", etc.)
+    target_tempo (int)
+    drill_type ("hands_separate", "hands_together", "loop", "slow_practice", "tempo_building", "rhythm_variation", "metronome", "articulation_focus", "checkpoint")
+    is_checkpoint
+    unlock_requirement (0-100)
+    created_at
 
 ### practice_sessions
 
@@ -64,16 +71,24 @@
 
     id (uuid, pk)
     session_id (fk)
-    section_id (fk)
+    plan_step_id (fk)
     duration_seconds
     tempo_used
+    mistake_count
+    self_rating (1-5)
+    completed
     notes
+    created_at
 
-### section_progress
+### step_progress
 
     id (uuid, pk)
     user_id (fk)
-    section_id (fk)
+    plan_step_id (fk)
     mastery_level (0–100)
-    last_practiced_at
+    confidence_score (0-100)
+    repititions
+    last_attempted_at
+    completed
+    created_at
 

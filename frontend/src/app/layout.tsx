@@ -8,7 +8,7 @@ const geistMono = Geist_Mono({ variable: "--font-geist-mono", subsets: ["latin"]
 
 export const metadata: Metadata = {
   title: "AI Music Coach",
-  description: "A Next.js app that generates AI-driven piano practice plans and tracks user progress.",
+  description: "A Next.js app that generates AI-driven music practice plans and tracks user progress.",
 };
 
 export default function RootLayout({ children }: { children: React.ReactNode }) {

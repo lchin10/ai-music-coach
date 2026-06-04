@@ -10,6 +10,7 @@ export default function UploadPage() {
 	const [selectedFile, setSelectedFile] = useState<File | null>(null);
 	const [isDragOver, setIsDragOver] = useState(false);
 	const [isUploading, setIsUploading] = useState(false);
+	const [uploadError, setUploadError] = useState<string | null>(null);
 	const router = useRouter();
 
 	const handleDragOver = useCallback((e: React.DragEvent) => {
@@ -49,60 +50,66 @@ export default function UploadPage() {
 		if (!selectedFile) return;
 
 		setIsUploading(true);
+		setUploadError(null);
+
+		// Minimum 3-second "Analyzing..." before redirect
+		const minDelay = new Promise<void>((resolve) => setTimeout(resolve, 3000));
 
 		try {
-			// Check if the PDF file contains sheet music
+			// Check if the PDF contains sheet music
 			const formData = new FormData();
 			formData.append("pdf_file", selectedFile);
-			const SheetMusicDetectorResponse = await fetch("http://localhost:8000/sheet_music/detector/", {
+			const detectorResp = await fetch("http://localhost:8000/sheet_music/detector", {
 				method: "POST",
 				body: formData,
 			});
-
-			const detectorData = await SheetMusicDetectorResponse.json();
-			const isSheetMusic = detectorData.sheet_music;
-
-			if (!isSheetMusic) {
-				throw new Error("Please submit a pdf with sheet music.");
+			const detectorData = await detectorResp.json();
+			if (!detectorData.sheet_music) {
+				throw new Error("This PDF doesn't appear to contain sheet music. Please try another file.");
 			}
-			// Add to supabase
-			const file = formData.get("pdf_file") as File;
-			const fileExt = file.name.split(".").pop();
+
+			// Upload to Supabase storage
+			const fileExt = selectedFile.name.split(".").pop();
 			const fileName = `${crypto.randomUUID()}.${fileExt}`;
 			const filePath = `${session?.user.id}/${fileName}`;
 
-			// Pieces storage bucket
-			const { error: uploadError } = await supabase.storage.from("pieces").upload(filePath, file);
+			const { error: storageError } = await supabase.storage.from("pieces").upload(filePath, selectedFile);
+			if (storageError) throw new Error("Upload failed. Please try again.");
 
-			if (uploadError) {
-				console.error(uploadError);
-				alert("Upload failed. Please try again.");
-				return;
-			}
-
-      // Pieces DB table
-			const { error: dbError } = await supabase
-        .from("pieces")
-        .insert({
-          id: crypto.randomUUID(),
-          user_id: session?.user.id,
-          title: file.name,
-          file_path: filePath,
-          status: "processing",
-        });
+			// Insert pieces row
+			const { data: insertData, error: dbError } = await supabase
+				.from("pieces")
+				.insert({
+					id: crypto.randomUUID(),
+					user_id: session?.user.id,
+					title: selectedFile.name,
+					file_path: filePath,
+					status: "processing",
+				})
+				.select();
 
 			if (dbError) {
-				console.error(dbError);
-        // Clean storage
 				await supabase.storage.from("pieces").remove([filePath]);
-				alert("Something went wrong saving your file.");
-				return;
+				throw new Error("Something went wrong saving your file.");
 			}
 
+			// Fire-and-forget backend processing
+			const pieceId = insertData?.[0]?.id;
+			const procForm = new FormData();
+			procForm.append("pdf_file", selectedFile);
+			if (pieceId) procForm.append("piece_id", pieceId);
+			if (session?.user.id) procForm.append("user_id", session.user.id);
+			fetch("http://localhost:8000/sheet_music/process", {
+				method: "POST",
+				body: procForm,
+			}).catch((err) => console.error("Failed to start processing", err));
+
+			// Wait until both the work and the 3-second animation are done
+			await minDelay;
 			router.push("/upload-confirmation");
 		} catch (error) {
 			console.error("Upload failed:", error);
-			alert("Upload failed. Please try again.");
+			setUploadError(error instanceof Error ? error.message : "Upload failed. Please try again.");
 		} finally {
 			setIsUploading(false);
 		}
@@ -126,9 +133,8 @@ export default function UploadPage() {
 				</div>
 
 				<div
-					className={`relative rounded-[2rem] border-2 border-dashed p-12 text-center transition-all duration-200 ${
-						isDragOver ? "border-indigo-400 bg-indigo-500/10" : "border-zinc-600 bg-zinc-900/50"
-					}`}
+					className={`relative rounded-[2rem] border-2 border-dashed p-12 text-center transition-all duration-200 ${isDragOver ? "border-indigo-400 bg-indigo-500/10" : "border-zinc-600 bg-zinc-900/50"
+						}`}
 					onDragOver={handleDragOver}
 					onDragLeave={handleDragLeave}
 					onDrop={handleDrop}
@@ -159,13 +165,16 @@ export default function UploadPage() {
 					</div>
 				</div>
 
+				{uploadError && (
+					<p className="text-center text-sm font-medium text-red-400">{uploadError}</p>
+				)}
+
 				<div className="flex justify-center">
 					<button
 						onClick={handleUpload}
 						disabled={!selectedFile || isUploading}
-						className={`rounded-2xl px-8 py-4 text-lg font-semibold transition ${
-							selectedFile && !isUploading ? "bg-indigo-500 text-white hover:bg-indigo-400 cursor-pointer" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
-						}`}
+						className={`rounded-2xl px-8 py-4 text-lg font-semibold transition ${selectedFile && !isUploading ? "bg-indigo-500 text-white hover:bg-indigo-400 cursor-pointer" : "bg-zinc-800 text-zinc-500 cursor-not-allowed"
+							}`}
 					>
 						{isUploading ? "Analyzing..." : "Upload & Analyze"}
 					</button>

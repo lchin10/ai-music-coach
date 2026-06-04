@@ -11,6 +11,10 @@ dependencies = [
     "opencv-python-headless",
     "pillow",
     "numpy",
+    "music21",
+    "supabase",
+    "python-multipart",
+    "anthropic",
 ]
 
 [tool.setuptools]
