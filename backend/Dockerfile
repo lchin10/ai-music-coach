@@ -1,54 +1,62 @@
 # syntax=docker/dockerfile:1
 
 # ---------------------------------------------------------------------------
-# Stage 1: build Audiveris (the Java OMR CLI) from source.
-# Building from a pinned tag is the most version-robust way to get a Linux
-# launcher; prebuilt Linux binaries are not reliably published per release.
-# Audiveris 5.x requires Java 17, so we need a full JDK here (not just a JRE).
+# Single-stage image: Ubuntu 22.04 (matches the prebuilt Audiveris .deb) +
+# Python app + Audiveris + Tesseract.
+#
+# We install Audiveris from its official prebuilt Ubuntu .deb rather than
+# building from source: the source Gradle build pulls javax.media.jai from
+# repository.springsource.com, which was permanently shut down (Jan 2025), so
+# `gradlew build` no longer resolves dependencies. The .deb is built with
+# jpackage and bundles its own Java runtime, so no separate JRE is needed.
 # ---------------------------------------------------------------------------
-FROM eclipse-temurin:17-jdk-jammy AS audiveris-build
+FROM ubuntu:22.04
 
-ARG AUDIVERIS_VERSION=5.3.1
+ENV DEBIAN_FRONTEND=noninteractive
+
+# Pin the Audiveris release; the ubuntu22.04 .deb matches this base image.
+ARG AUDIVERIS_VERSION=5.10.2
+ARG AUDIVERIS_DEB=Audiveris-${AUDIVERIS_VERSION}-ubuntu22.04-x86_64.deb
+
+# System deps: Python, Tesseract (OCR for Audiveris), and the Audiveris .deb
+# itself (apt resolves its dependencies, including the bundled-runtime libs).
+# opencv-python-headless needs no GUI libraries.
 RUN apt-get update && apt-get install -y --no-install-recommends \
-        git ca-certificates \
+        ca-certificates curl \
+        python3 python3-venv python3-pip \
+        tesseract-ocr tesseract-ocr-eng \
+        libfreetype6 fontconfig \
+    # The .deb's post-install registers a desktop menu entry via
+    # xdg-desktop-menu, which fails in a headless container ("No writable
+    # system menu directory"). Stub those tools so the postinst succeeds; the
+    # app files themselves are unpacked regardless.
+    && printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-desktop-menu \
+    && printf '#!/bin/sh\nexit 0\n' > /usr/local/bin/xdg-desktop-icon \
+    && chmod +x /usr/local/bin/xdg-desktop-menu /usr/local/bin/xdg-desktop-icon \
+    && curl -fsSL -o /tmp/audiveris.deb \
+        "https://github.com/Audiveris/audiveris/releases/download/${AUDIVERIS_VERSION}/${AUDIVERIS_DEB}" \
+    && (apt-get install -y --no-install-recommends /tmp/audiveris.deb || true) \
+    && rm /tmp/audiveris.deb \
+    # jpackage installs the launcher under /opt/<app>/bin; symlink it onto PATH
+    # as `audiveris` so the processor's shutil.which("audiveris") finds it.
+    # Fail loudly if the launcher did not land.
+    && launcher="$(find /opt -type f -name 'Audiveris' 2>/dev/null | head -1)" \
+    && test -n "$launcher" \
+    && ln -s "$launcher" /usr/local/bin/audiveris \
     && rm -rf /var/lib/apt/lists/*
 
-WORKDIR /build
-RUN git clone --depth 1 --branch ${AUDIVERIS_VERSION} \
-        https://github.com/Audiveris/audiveris.git
-WORKDIR /build/audiveris
-# `installDist` (from the Gradle application plugin) produces a self-contained
-# distribution at build/install/Audiveris with a bin/Audiveris launcher.
-RUN ./gradlew --no-daemon -x test installDist
-
-# ---------------------------------------------------------------------------
-# Stage 2: runtime image — Python app + a JRE + Audiveris + Tesseract.
-# Pin to bookworm: newer Debian (trixie) drops the openjdk-17-jre-headless
-# package that Audiveris 5.x requires.
-# ---------------------------------------------------------------------------
-FROM python:3.11-slim-bookworm
-
-# JRE to run Audiveris, Tesseract (Audiveris OCR dependency), and the fonts/
-# native libs the OMR pipeline needs. opencv-python-headless needs no GUI libs.
-RUN apt-get update && apt-get install -y --no-install-recommends \
-        openjdk-17-jre-headless \
-        tesseract-ocr \
-        tesseract-ocr-eng \
-        libfreetype6 \
-        fontconfig \
-    && rm -rf /var/lib/apt/lists/*
-
-# Copy the built Audiveris distribution from the build stage.
-COPY --from=audiveris-build /build/audiveris/build/install/Audiveris /opt/audiveris
-
-# Audiveris must run headless; AUDIVERIS_PATH is read by the processor service.
+# Audiveris must run headless. AUDIVERIS_PATH is read by the processor service;
+# point it at the symlink created above.
 ENV JAVA_TOOL_OPTIONS="-Djava.awt.headless=true" \
-    AUDIVERIS_PATH="/opt/audiveris/bin/Audiveris" \
-    TESSDATA_PREFIX="/usr/share/tesseract-ocr/5/tessdata" \
+    AUDIVERIS_PATH="/usr/local/bin/audiveris" \
     PYTHONUNBUFFERED=1
 
+# Install the Python app into an isolated venv (avoids PEP-668 conflicts with
+# the system Python).
+RUN python3 -m venv /opt/venv
+ENV PATH="/opt/venv/bin:$PATH"
+
 WORKDIR /app
-# Install Python deps first (separate layer for better build caching).
 COPY pyproject.toml ./
 COPY app ./app
 RUN pip install --no-cache-dir -e .
