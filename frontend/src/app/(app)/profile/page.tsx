@@ -18,6 +18,7 @@ type Piece = {
 	created_at: string;
 	status: string;
 	file_path: string;
+	failure_reason: string | null;
 };
 
 export default function ProfilePage() {
@@ -46,7 +47,7 @@ export default function ProfilePage() {
 			setProfile(res.profile);
 
       // Pieces
-      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path").eq("user_id", session.user.id);
+      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path, failure_reason").eq("user_id", session.user.id);
       if (piecesError) {
         return;
       }
@@ -248,7 +249,7 @@ export default function ProfilePage() {
 								{pieces.map((piece: Piece) => (
 									<div
 										key={piece.id}
-										className={`rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6 transition-colors ${piece.status === "ready" ? "cursor-pointer hover:border-indigo-500/40" : ""}`}
+										className={`group relative rounded-3xl border border-white/10 bg-zinc-950/70 p-4 sm:p-6 transition-colors ${piece.status === "ready" ? "cursor-pointer hover:border-indigo-500/40" : ""} ${piece.status === "failed" ? "hover:border-rose-500/40" : ""}`}
 										onClick={(event) => {
 											event.stopPropagation();
 											if (piece.status === "ready") router.push(`/piece/${piece.id}`);
@@ -260,6 +261,12 @@ export default function ProfilePage() {
 												<p className="text-sm text-zinc-400">Uploaded: {piece.created_at}</p>
 											</div>
 											<div className="relative flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
+												{piece.status === "failed" && piece.failure_reason && (
+													<div className="pointer-events-none absolute bottom-full right-0 z-30 mb-2 w-72 rounded-2xl border border-rose-500/30 bg-zinc-950 px-4 py-3 text-xs leading-relaxed text-rose-200 opacity-0 shadow-xl shadow-black/40 transition-opacity duration-150 group-hover:opacity-100">
+														<p className="mb-1 font-semibold uppercase tracking-[0.2em] text-rose-400">Why it failed</p>
+														{piece.failure_reason}
+													</div>
+												)}
 												<span className={`rounded-full px-3 py-1 text-xs font-semibold uppercase tracking-[0.2em] ${piece.status === "ready" ? "bg-indigo-500/20 text-indigo-300" : piece.status === "failed" ? "bg-rose-500/20 text-rose-300" : "bg-zinc-800 text-zinc-300"}`}>
 													{piece.status}
 												</span>
