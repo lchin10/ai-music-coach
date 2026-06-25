@@ -4,7 +4,14 @@ from fastapi.middleware.cors import CORSMiddleware
 
 from app.routers import sheet_music
 
-frontend_url = os.getenv("FRONTEND_URL")
+# Allow whichever frontend origins are configured. Locally, .env.local sets
+# both FRONTEND_URL (prod) and FRONTEND_DEV_URL (http://localhost:3000); in
+# production only FRONTEND_URL is set, so only that origin is allowed.
+allowed_origins = [
+    url
+    for url in (os.getenv("FRONTEND_URL"), os.getenv("FRONTEND_DEV_URL"))
+    if url
+]
 
 app = FastAPI(
     title="AI Music Coach API",
@@ -13,7 +20,7 @@ app = FastAPI(
 
 app.add_middleware(
     CORSMiddleware,
-    allow_origins=[frontend_url],
+    allow_origins=allowed_origins,
     allow_credentials=True,
     allow_methods=["*"],
     allow_headers=["*"],

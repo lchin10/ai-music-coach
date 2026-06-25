@@ -1,4 +1,6 @@
-# AI Music Coach (in progress)
+# AI Music Coach
+
+**Live demo:** [ai-music-coach-eight.vercel.app](https://ai-music-coach-eight.vercel.app/) &nbsp;·&nbsp; **API:** [ai-music-coach-api.fly.dev](https://ai-music-coach-api.fly.dev/)
 
 AI Music Coach is a web application designed to help musicians (especially pianists) practice more effectively through structured, AI-assisted practice planning. Users can upload sheet music PDFs, and the app analyzes the score using computer vision and music theory heuristics to generate personalized practice recommendations, section breakdowns, and targeted drills.
 
@@ -35,10 +37,13 @@ The app serves as both a practice planner and a progress tracker, allowing users
 
 ## Technology Stack
 
-- **Frontend**: Next.js, React, Typescript
-- **Backend**: Next.js API, FastAPI, Python
-- **Computer Vision / Music Analysis**: OpenCV, PyMuPDF, NumPy, Pillow
-- **Deployment**: Vercel (frontend), Docker (backend)
+- **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS
+- **Backend**: FastAPI, Python
+- **AI**: Claude (Anthropic) API — generates structured practice plans via tool use
+- **Music processing**: Audiveris (PDF → MusicXML OMR), music21
+- **Computer Vision**: OpenCV, PyMuPDF, NumPy, Pillow
+- **Auth / Data / Storage**: Supabase (Postgres, Storage, Google OAuth)
+- **Deployment**: Vercel (frontend), Fly.io via Docker (backend)
 
 ## Requirements
 
@@ -77,6 +82,32 @@ The app serves as both a practice planner and a progress tracker, allowing users
    npm run build
    npm start
    ```
+
+## Deployment
+
+The frontend and backend deploy independently; Supabase is the shared auth/storage/database layer for both.
+
+| Service | Host | Source | Live URL |
+|---|---|---|---|
+| Frontend (Next.js) | Vercel | root dir `frontend/` | [ai-music-coach-eight.vercel.app](https://ai-music-coach-eight.vercel.app/) |
+| Backend (FastAPI) | Fly.io (Docker) | `backend/Dockerfile` + `backend/fly.toml` | [ai-music-coach-api.fly.dev](https://ai-music-coach-api.fly.dev/) |
+
+### Frontend → Vercel
+- Import the repo into Vercel with **Root Directory = `frontend/`** (Next.js is auto-detected).
+- Set env vars: `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`, and `NEXT_PUBLIC_BACKEND_URL` (the Fly API URL).
+- Add the Vercel domain to **Supabase → Auth → URL Configuration** so Google OAuth redirects resolve.
+
+### Backend → Fly.io
+The backend ships as a Docker image because it needs **Audiveris** (a Java OMR CLI) installed system-wide — which serverless platforms like Vercel can't provide. The image installs Audiveris from its prebuilt Ubuntu `.deb`, so no separate JRE or source build is required.
+
+```bash
+cd backend
+fly apps create ai-music-coach-api          # once
+Get-Content .env.local | fly secrets import  # push secrets (PowerShell)
+fly deploy                                    # builds Dockerfile, deploys
+```
+
+The machine is configured always-on (`auto_stop_machines = "off"`, `min_machines_running = 1`) in [`fly.toml`](backend/fly.toml) because processing runs as a fire-and-forget background task that must survive idle traffic. If Audiveris runs out of memory on large scores, raise RAM with `fly scale memory 2048`. See [`backend/README.md`](backend/README.md) for env vars and details.
 
 ## Future Development
 

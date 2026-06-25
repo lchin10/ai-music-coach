@@ -1,6 +1,8 @@
 # AI Music Coach — Frontend
 
-Next.js 15 (App Router) frontend. Communicates with the FastAPI backend (at `NEXT_PUBLIC_BACKEND_URL`, defaulting to `http://localhost:8000` in dev) and reads/writes Supabase directly for auth and data.
+Next.js 16 (App Router) frontend. Communicates with the FastAPI backend (at `NEXT_PUBLIC_BACKEND_URL`, defaulting to `http://localhost:8000` in dev) and reads/writes Supabase directly for auth and data.
+
+**Live:** [ai-music-coach-eight.vercel.app](https://ai-music-coach-eight.vercel.app/) — deployed on Vercel. Backend API: [ai-music-coach-api.fly.dev](https://ai-music-coach-api.fly.dev/).
 
 ## Setup
 
