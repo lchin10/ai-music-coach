@@ -1,6 +1,6 @@
 # AI Music Coach — Frontend
 
-Next.js 15 (App Router) frontend. Communicates with the FastAPI backend at `http://localhost:8000` and reads/writes Supabase directly for auth and data.
+Next.js 15 (App Router) frontend. Communicates with the FastAPI backend (at `NEXT_PUBLIC_BACKEND_URL`, defaulting to `http://localhost:8000` in dev) and reads/writes Supabase directly for auth and data.
 
 ## Setup
 
@@ -19,6 +19,7 @@ Copy `.env.local.example` to `.env.local` and fill in the values from your Supab
 |---|---|
 | `NEXT_PUBLIC_SUPABASE_URL` | Supabase → Settings → API → Project URL |
 | `NEXT_PUBLIC_SUPABASE_ANON_KEY` | Supabase → Settings → API → anon / public key |
+| `NEXT_PUBLIC_BACKEND_URL` | Base URL of the FastAPI backend (e.g. `http://localhost:8000` in dev, or the deployed Render URL). Optional in dev — defaults to `http://localhost:8000`. |
 
 ## Key pages
 

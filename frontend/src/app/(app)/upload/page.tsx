@@ -5,6 +5,8 @@ import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import useSession from "@/lib/userSession";
 
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+
 export default function UploadPage() {
 	const { session, loading } = useSession();
 	const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -59,7 +61,7 @@ export default function UploadPage() {
 			// Check if the PDF contains sheet music
 			const formData = new FormData();
 			formData.append("pdf_file", selectedFile);
-			const detectorResp = await fetch("http://localhost:8000/sheet_music/detector", {
+			const detectorResp = await fetch(`${BACKEND_URL}/sheet_music/detector`, {
 				method: "POST",
 				body: formData,
 			});
@@ -99,7 +101,7 @@ export default function UploadPage() {
 			procForm.append("pdf_file", selectedFile);
 			if (pieceId) procForm.append("piece_id", pieceId);
 			if (session?.user.id) procForm.append("user_id", session.user.id);
-			fetch("http://localhost:8000/sheet_music/process", {
+			fetch(`${BACKEND_URL}/sheet_music/process`, {
 				method: "POST",
 				body: procForm,
 			}).catch((err) => console.error("Failed to start processing", err));
