@@ -5,9 +5,13 @@ import tempfile
 import subprocess
 from typing import Optional
 
+import fitz  # PyMuPDF
 from music21 import converter
 
 from supabase import create_client
+
+# 150 keeps a page legible on a laptop at roughly 200-400 KB.
+PAGE_IMAGE_DPI = 150
 
 from app import schema
 from app.graph import features as feat
@@ -132,6 +136,53 @@ class SheetMusicProcessor:
                 self.supabase.table("pieces").update({"measure_offset": offset}).eq("id", piece_id).execute()
             except Exception:
                 pass
+
+    def _store_page_images(self, piece_id, user_id, pdf_bytes: bytes, features: dict):
+        """Render the PDF pages this piece spans and store them.
+
+        The engraving in the PDF is the ground truth. Re-rendering the OMR
+        output instead loses whatever Audiveris missed — on a dense score that
+        includes fingerings, most dynamics, and some notes — which is not
+        something to show someone who is trying to play it.
+
+        Only the pages the piece actually covers are rendered: a scan can hold
+        several movements, and Audiveris exports each separately.
+        """
+        if not (self.supabase and piece_id):
+            return
+
+        ranges = features["score"].get("page_ranges") or []
+        if not ranges:
+            return
+
+        manifest = []
+        try:
+            document = fitz.open(stream=pdf_bytes, filetype="pdf")
+            folder = user_id or "anonymous"
+
+            for entry in ranges:
+                index = entry["page"]
+                if index >= document.page_count:
+                    print(f"[processor] page {index} beyond the PDF — skipping")
+                    continue
+
+                png = document[index].get_pixmap(dpi=PAGE_IMAGE_DPI).tobytes("png")
+                key = f"{folder}/{piece_id}-p{index}.png"
+                self.supabase.storage.from_("pieces").upload(
+                    key, png, {"content-type": "image/png", "upsert": "true"}
+                )
+                manifest.append({**entry, "path": key, "bytes": len(png)})
+
+            self.supabase.table("pieces").update({"page_images": manifest}).eq(
+                "id", piece_id
+            ).execute()
+            print(
+                f"[processor] Stored {len(manifest)} page images "
+                f"({sum(m['bytes'] for m in manifest) // 1024} KB total)"
+            )
+        except Exception as e:
+            # Notation is a display nicety; the plan is the product.
+            print(f"[processor] could not store page images: {e}")
 
     def _profile(self, user_id: Optional[str]) -> dict:
         """Collected at onboarding and, until now, never used by the planner."""
@@ -334,6 +385,7 @@ class SheetMusicProcessor:
             # it. Without this the temp dir takes it and there is nothing to
             # draw the bars a drill refers to.
             self._store_musicxml(piece_id, user_id, musicxml_path, features)
+            self._store_page_images(piece_id, user_id, pdf_bytes, features)
 
             plan = self._run_graph(piece_id, user_id, features)
             if plan is None:

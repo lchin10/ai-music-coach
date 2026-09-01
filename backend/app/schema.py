@@ -11,6 +11,7 @@ EXPECTED = {
         "failure_reason",      # migration 000
         "processing_stage",    # migration 001
         "musicxml_path", "measure_offset",  # migration 002
+        "page_images",                      # migration 005
     ],
     "sections": [
         "id", "piece_id", "title", "start_measure", "end_measure",
