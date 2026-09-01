@@ -189,15 +189,9 @@ def _score_level(score, measures_by_part):
 
     context["parts"] = [p.partName or f"Part {i + 1}" for i, p in enumerate(score.parts)]
 
-    # Use the score's own measure numbers, not a 1..N count — a pickup measure
-    # is numbered 0, and the numbers a student reads off the page must match
-    # the ones the plan cites.
-    numbers = [m.measureNumber for m in measures_by_part[0]] if measures_by_part else []
-    numbers = [n for n in numbers if n is not None]
-    context["first_measure"] = min(numbers) if numbers else 1
-    context["last_measure"] = max(numbers) if numbers else 0
     context["total_measures"] = len(measures_by_part[0]) if measures_by_part else 0
-    context["has_pickup"] = context["first_measure"] == 0
+    # first/last are filled in by extract(), which knows whether the score's own
+    # numbering survived the usability check.
 
     # --- structural signals: the strongest boundary evidence available ---
     repeats, barlines = [], []
@@ -288,6 +282,30 @@ def extract(score) -> dict:
             f"{total} measures exceeds the {MAX_MEASURES}-measure limit for a single plan"
         )
 
+    # Audiveris output often carries missing or all-zero measure numbers. Left
+    # alone that yields a degenerate range and the segmenter is asked to "tile
+    # measures 0 to 0", which correctly produces nothing. Fall back to
+    # sequential numbering whenever the score's own numbers aren't usable.
+    numbers = [m.measureNumber for m in measures_by_part[0]]
+    usable = (
+        all(n is not None for n in numbers)
+        and max(numbers) > 0
+        # Contiguous and ascending. Audiveris also emits numbering with GAPS
+        # (e.g. 39 measures numbered 0..44), which made the segmenter's
+        # instruction "tile measures 0 to 44" unsatisfiable against a table
+        # holding only 39 of them — it returned nothing at all. Renumbering
+        # guarantees the stated range and the rows always agree.
+        and numbers == list(range(numbers[0], numbers[0] + len(numbers)))
+    )
+    if not usable:
+        print(
+            f"[features] measure numbering unusable "
+            f"({len(numbers)} measures spanning {min(n for n in numbers if n is not None)}-"
+            f"{max(n for n in numbers if n is not None)}) - renumbering 1..N"
+            if all(n is not None for n in numbers)
+            else "[features] measure numbering unusable (missing numbers) - renumbering 1..N"
+        )
+
     rows = []
     for index in range(total):
         per_part = [
@@ -299,14 +317,33 @@ def extract(score) -> dict:
             continue
         row = _merge_parts(per_part)
         # `or` would collapse a pickup measure (number 0) onto m1.
-        number = measures_by_part[0][index].measureNumber
-        row["m"] = number if number is not None else index + 1
+        row["m"] = numbers[index] if usable else index + 1
         rows.append(row)
 
-    return {
-        "score": _score_level(score, measures_by_part),
-        "measures": _derived(rows),
-    }
+    score_level = _score_level(score, measures_by_part)
+    emitted = [r["m"] for r in rows]
+    score_level["first_measure"] = min(emitted)
+    score_level["last_measure"] = max(emitted)
+    score_level["has_pickup"] = usable and score_level["first_measure"] == 0
+
+    # A degenerate range means every downstream prompt is nonsense. Fail here
+    # rather than paying for a fan-out that cannot succeed.
+    if score_level["last_measure"] <= score_level["first_measure"]:
+        raise ValueError(
+            f"unusable measure range {score_level['first_measure']}-{score_level['last_measure']}"
+        )
+
+    # The segmenter is told to tile first..last and is given these rows. If the
+    # range covers measures the table doesn't contain, that instruction cannot
+    # be satisfied and the model returns nothing.
+    span = score_level["last_measure"] - score_level["first_measure"] + 1
+    if span != len(rows):
+        raise ValueError(
+            f"measure range {score_level['first_measure']}-{score_level['last_measure']} "
+            f"spans {span} measures but the table holds {len(rows)}"
+        )
+
+    return {"score": score_level, "measures": _derived(rows)}
 
 
 def to_prompt_table(features: dict) -> str:

@@ -9,6 +9,7 @@ from music21 import converter
 
 from supabase import create_client
 
+from app import schema
 from app.graph import features as feat
 from app.graph.build import build, postgres_checkpointer
 
@@ -64,9 +65,17 @@ class SheetMusicProcessor:
     # ----------------------------------------------------------------------
 
     def _stage(self, piece_id: str, stage: str):
-        """Per-node progress the upload-confirmation page can show."""
-        if self.supabase and piece_id:
+        """Per-node progress the upload-confirmation page can show.
+
+        Cosmetic — never let it fail the run. Without migration 001 the column
+        doesn't exist, and a progress label is not worth losing a piece over.
+        """
+        if not (self.supabase and piece_id):
+            return
+        try:
             self.supabase.table("pieces").update({"processing_stage": stage}).eq("id", piece_id).execute()
+        except Exception as e:
+            print(f"[processor] could not set stage '{stage}' (run migration 001?): {e}")
 
     def _fail(self, piece_id: str, reason: str):
         print(f"[processor] FAILED: {reason}")
@@ -74,6 +83,55 @@ class SheetMusicProcessor:
             self.supabase.table("pieces").update(
                 {"status": "failed", "failure_reason": reason}
             ).eq("id", piece_id).execute()
+
+    def _missing_migration(self) -> Optional[str]:
+        """Check the schema before spending money, not after.
+
+        _persist writes columns added by migration 001. Without it the whole
+        fan-out runs, bills for N sections of Opus 5, and then throws on the
+        insert — so probe first and fail for free.
+        """
+        if not self.supabase:
+            return None
+        missing = schema.check(self.supabase)
+        if not missing:
+            return None
+        return "; ".join(f"{table}: {', '.join(cols)}" for table, cols in missing.items())
+
+    def _store_musicxml(self, piece_id: str, user_id: Optional[str], path: str, features: dict):
+        """Upload the score to the `pieces` bucket so the UI can render bars.
+
+        Non-fatal: a piece with a plan but no notation is still useful, and
+        losing the whole plan over a failed upload would not be.
+        """
+        if not (self.supabase and piece_id):
+            return
+
+        offset = features["score"].get("first_measure", 1)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+
+            folder = user_id or "anonymous"
+            key = f"{folder}/{piece_id}{os.path.splitext(path)[1] or '.mxl'}"
+            # .mxl is a zip container. The bucket must allow this type —
+            # see migrations/003_storage_mime.sql.
+            self.supabase.storage.from_("pieces").upload(
+                key,
+                data,
+                {"content-type": "application/zip", "upsert": "true"},
+            )
+            self.supabase.table("pieces").update(
+                {"musicxml_path": key, "measure_offset": offset}
+            ).eq("id", piece_id).execute()
+            print(f"[processor] Stored MusicXML at {key} ({len(data)} bytes, offset {offset})")
+        except Exception as e:
+            print(f"[processor] could not store MusicXML (notation will be unavailable): {e}")
+            # The offset is still worth recording even if the upload failed.
+            try:
+                self.supabase.table("pieces").update({"measure_offset": offset}).eq("id", piece_id).execute()
+            except Exception:
+                pass
 
     def _profile(self, user_id: Optional[str]) -> dict:
         """Collected at onboarding and, until now, never used by the planner."""
@@ -111,7 +169,10 @@ class SheetMusicProcessor:
             difficulty = 20
             if first_part:
                 notes, counted = 0, 0
-                for m in first_part.measures(start, end):
+                # .measures() returns a Stream carrying the part's Instrument
+                # alongside the measures; iterating it raw hands an Instrument
+                # to .recurse() and throws.
+                for m in first_part.measures(start, end).getElementsByClass("Measure"):
                     counted += 1
                     notes += len(list(m.recurse().getElementsByClass("Note")))
                 avg = notes / counted if counted else 0
@@ -168,6 +229,11 @@ class SheetMusicProcessor:
         regenerated with fresh UUIDs, every future mastery and progress row
         keyed on section_id would orphan silently.
         """
+        # PostgREST turns insert([]) into "?columns=()" and answers with an
+        # opaque PGRST100 parse error, so never hand it an empty plan.
+        if not plan.get("sections"):
+            raise ValueError("refusing to persist a plan with no sections")
+
         plan_id = str(uuid.uuid4())
         sections_db, steps_db = [], []
 
@@ -219,6 +285,14 @@ class SheetMusicProcessor:
 
     def process(self, pdf_bytes: bytes, piece_id: str, user_id: Optional[str], file_name: str):
         print(f"[processor] Starting processing for piece_id={piece_id}, file={file_name}")
+        missing = self._missing_migration()
+        if missing:
+            self._fail(
+                piece_id,
+                f"Backend database is out of date — run backend/migrations/001_planning_graph.sql. {missing}",
+            )
+            return
+
         tmpdir = tempfile.mkdtemp(prefix="smp_")
         score = None
         try:
@@ -255,6 +329,11 @@ class SheetMusicProcessor:
                 f"{len(features['score']['repeat_barlines'])} repeats, "
                 f"{len(features['score']['double_barlines'])} double barlines"
             )
+
+            # Keep the MusicXML — the frontend renders notation straight from
+            # it. Without this the temp dir takes it and there is nothing to
+            # draw the bars a drill refers to.
+            self._store_musicxml(piece_id, user_id, musicxml_path, features)
 
             plan = self._run_graph(piece_id, user_id, features)
             if plan is None:

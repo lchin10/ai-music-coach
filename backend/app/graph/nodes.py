@@ -5,7 +5,10 @@ the model. That keeps adaptive thinking, effort, cache_control and strict
 tools available, none of which survive a LangChain model abstraction.
 """
 
+import json
 import os
+import tempfile
+import time
 
 import anthropic
 
@@ -25,6 +28,26 @@ def client() -> anthropic.Anthropic:
     if _client is None:
         _client = anthropic.Anthropic(api_key=os.getenv("ANTHROPIC_API_KEY"))
     return _client
+
+
+def _dump_payload(name: str, kwargs: dict):
+    """Write a rejected request to a temp file for inspection."""
+    try:
+        path = os.path.join(
+            tempfile.gettempdir(), f"graph_reject_{name}_{int(time.time())}.json"
+        )
+        with open(path, "w", encoding="utf-8") as f:
+            json.dump(kwargs, f, indent=1, default=str, ensure_ascii=False)
+
+        system_chars = sum(len(b["text"]) for b in kwargs.get("system", []))
+        user = kwargs["messages"][0]["content"]
+        print(
+            f"[graph] payload dumped to {path} "
+            f"(system={system_chars} chars, user={len(user)} chars, "
+            f"max_tokens={kwargs.get('max_tokens')})"
+        )
+    except Exception as e:
+        print(f"[graph] could not dump payload: {e}")
 
 
 def _call(system_prompt, cached_prefix, user_content, tool, effort, thinking=False):
@@ -57,7 +80,15 @@ def _call(system_prompt, cached_prefix, user_content, tool, effort, thinking=Fal
     if thinking:
         kwargs["thinking"] = {"type": "adaptive"}
 
-    response = client().messages.create(**kwargs)
+    try:
+        response = client().messages.create(**kwargs)
+    except anthropic.APIStatusError as e:
+        # The API's 400 body is often just "Invalid request data", which says
+        # nothing about which field it disliked. Dump the exact payload so the
+        # failure is diagnosable from one occurrence instead of a re-run.
+        print(f"[graph] {tool['name']} rejected ({e.status_code}): {e}")
+        _dump_payload(tool["name"], kwargs)
+        raise
 
     usage = response.usage
     print(
@@ -121,6 +152,17 @@ def segment(state):
         effort="high",
         thinking=True,
     )
+
+    print(
+        f"[graph] segmenter returned {len(result['sections'])} sections "
+        f"for measures {first}-{last}"
+    )
+    if not result["sections"]:
+        # Silently returning nothing here used to produce an empty fan-out, an
+        # empty plan, and a confusing PostgREST error at insert time.
+        raise RuntimeError(
+            f"segmenter returned no sections for measures {first}-{last}"
+        )
 
     sections = result["sections"][:MAX_SECTIONS]
     if len(result["sections"]) > MAX_SECTIONS:
@@ -303,18 +345,27 @@ def critique(state):
         for s in state["sections"]
     )
 
-    result = _call(
-        prompts.CRITIQUE_SYSTEM,
-        cached_prefix(state),
-        f"Review this practice plan.\n"
-        f"{prompts.level_line(state['profile'])}\n"
-        f"Form: {state['structural_summary']}\n\n"
-        f"{plan_text}\n\n"
-        f"{summarize(report)}",
-        prompts.CRITIQUE_TOOL,
-        effort="high",
-        thinking=True,
-    )
+    try:
+        result = _call(
+            prompts.CRITIQUE_SYSTEM,
+            cached_prefix(state),
+            f"Review this practice plan.\n"
+            f"{prompts.level_line(state['profile'])}\n"
+            f"Form: {state['structural_summary']}\n\n"
+            f"{plan_text}\n\n"
+            f"{summarize(report)}",
+            prompts.CRITIQUE_TOOL,
+            effort="high",
+            thinking=True,
+        )
+    except Exception as e:
+        # The critic is an optional quality gate, and by this point the plan
+        # has already passed the deterministic validator and cost N sections
+        # of fan-out. Throwing all of that away over a failed review — and
+        # falling back to the 3-section deterministic plan — is far worse than
+        # shipping an unreviewed plan.
+        print(f"[graph] critique failed, shipping unreviewed plan: {e}")
+        return {"critique": {"verdict": "approve", "reasoning": f"critique unavailable: {e}"}}
 
     return {"critique": result}
 

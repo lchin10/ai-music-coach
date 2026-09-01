@@ -163,6 +163,44 @@ def test_revision_reruns_only_the_flagged_section():
     assert len(state["sections"]) == 2, "revision must not duplicate sections"
 
 
+def test_critique_failure_still_ships_the_plan():
+    """A failed review must not discard N sections of successful fan-out.
+
+    A real run lost 12 successful calls to a 400 on the critique request and
+    fell back to the 3-section deterministic plan.
+    """
+    class FailingCritic(StubClient):
+        def create(self, **kwargs):
+            if kwargs["tools"][0]["name"] == "review_plan":
+                self.calls.append("review_plan")
+                raise RuntimeError("400 Invalid request data")
+            return super().create(**kwargs)
+
+    stub = FailingCritic([])
+    nodes._client = stub
+    # Force the critic to be reached by giving the validator something to flag.
+    original = nodes.validate_plan
+
+    def flagged(state):
+        result = original(state)
+        result["validation"]["soft"].append("synthetic finding")
+        return result
+
+    nodes.validate_plan = flagged
+    try:
+        state = build().invoke(
+            {"piece_id": "p1", "user_id": "u1", "profile": {"piano_level": "intermediate"},
+             "features": FEATURES, "revisions": 0},
+            {"configurable": {"thread_id": "t"}, "recursion_limit": 50},
+        )
+    finally:
+        nodes.validate_plan = original
+
+    assert "review_plan" in stub.calls, "critic should have been attempted"
+    assert len(state["sections"]) == 2, "plan must survive a failed review"
+    assert state["critique"]["verdict"] == "approve"
+
+
 def test_revision_budget_terminates():
     original = nodes.critique
     nodes.critique = lambda s: (
