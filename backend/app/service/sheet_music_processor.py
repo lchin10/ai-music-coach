@@ -64,9 +64,17 @@ class SheetMusicProcessor:
     # ----------------------------------------------------------------------
 
     def _stage(self, piece_id: str, stage: str):
-        """Per-node progress the upload-confirmation page can show."""
-        if self.supabase and piece_id:
+        """Per-node progress the upload-confirmation page can show.
+
+        Cosmetic — never let it fail the run. Without migration 001 the column
+        doesn't exist, and a progress label is not worth losing a piece over.
+        """
+        if not (self.supabase and piece_id):
+            return
+        try:
             self.supabase.table("pieces").update({"processing_stage": stage}).eq("id", piece_id).execute()
+        except Exception as e:
+            print(f"[processor] could not set stage '{stage}' (run migration 001?): {e}")
 
     def _fail(self, piece_id: str, reason: str):
         print(f"[processor] FAILED: {reason}")
@@ -74,6 +82,23 @@ class SheetMusicProcessor:
             self.supabase.table("pieces").update(
                 {"status": "failed", "failure_reason": reason}
             ).eq("id", piece_id).execute()
+
+    def _missing_migration(self) -> Optional[str]:
+        """Check the schema before spending money, not after.
+
+        _persist writes columns added by migration 001. Without it the whole
+        fan-out runs, bills for N sections of Opus 5, and then throws on the
+        insert — so probe first and fail for free.
+        """
+        if not self.supabase:
+            return None
+        try:
+            self.supabase.table("plan_steps").select(
+                "focus_start_measure, focus_end_measure, success_criterion, source"
+            ).limit(1).execute()
+            return None
+        except Exception as e:
+            return f"plan_steps is missing migration 001 columns ({e})"
 
     def _profile(self, user_id: Optional[str]) -> dict:
         """Collected at onboarding and, until now, never used by the planner."""
@@ -219,6 +244,14 @@ class SheetMusicProcessor:
 
     def process(self, pdf_bytes: bytes, piece_id: str, user_id: Optional[str], file_name: str):
         print(f"[processor] Starting processing for piece_id={piece_id}, file={file_name}")
+        missing = self._missing_migration()
+        if missing:
+            self._fail(
+                piece_id,
+                f"Backend database is out of date — run backend/migrations/001_planning_graph.sql. {missing}",
+            )
+            return
+
         tmpdir = tempfile.mkdtemp(prefix="smp_")
         score = None
         try:
