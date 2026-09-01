@@ -15,7 +15,12 @@ dependencies = [
     "supabase",
     "python-multipart",
     "anthropic",
+    # LangGraph only — deliberately NOT langchain-anthropic. The nodes call the
+    # Anthropic SDK directly to keep adaptive thinking, effort, cache_control
+    # and strict tools, none of which survive a LangChain model wrapper.
+    "langgraph",
+    "langgraph-checkpoint-postgres",
 ]
 
 [tool.setuptools]
-packages = ["app"]
+packages = ["app", "app.graph"]

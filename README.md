@@ -13,10 +13,11 @@ The app serves as both a practice planner and a progress tracker, allowing users
 ### MVP Features
 - **Sheet Music Upload**: Upload piano sheet music in PDF format.
 - **Computer Vision-Based Score Detection**: Uses OpenCV-based music notation detection to validate and analyze uploaded sheet music
-- **AI-Powered Analysis**: Automatically generates:
-  - Section breakdowns
-  - Tempo suggestions
+- **Multi-Agent Practice Planning**: A LangGraph pipeline of four Claude agents that read the actual score — not a summary of it — and generate:
+  - Section breakdowns based on real musical structure (repeats, cadences, key changes)
+  - Per-section technical analysis anchored to specific measures
   - Targeted drills (e.g., hands-separate practice, specific measure focus)
+  - A reviewed, validated plan personalized to the player's level
 - **Practice Tracker**: Tracks time spent practicing and sections worked on.
 - **Progress Memory**: Resume practice sessions without losing progress.
 
@@ -39,11 +40,69 @@ The app serves as both a practice planner and a progress tracker, allowing users
 
 - **Frontend**: Next.js 16, React 19, TypeScript, Tailwind CSS
 - **Backend**: FastAPI, Python
-- **AI**: Claude (Anthropic) API — generates structured practice plans via tool use
+- **AI**: Claude (Anthropic) API — four agents orchestrated with LangGraph (see [Practice plan pipeline](#practice-plan-pipeline))
 - **Music processing**: Audiveris (PDF → MusicXML OMR), music21
 - **Computer Vision**: OpenCV, PyMuPDF, NumPy, Pillow
 - **Auth / Data / Storage**: Supabase (Postgres, Storage, Google OAuth)
 - **Deployment**: Vercel (frontend), Fly.io via Docker (backend)
+
+## Practice plan pipeline
+
+Uploading a PDF runs a LangGraph state machine in `backend/app/graph/`. Only the four
+LLM nodes call Claude; everything else is deterministic Python, because music21 is
+better and cheaper at reading a score than a model is.
+
+```
+ingest              Audiveris → MusicXML → music21
+      ↓
+extract_features    per-measure table: density, leaps, chord spans, hand crossing,
+                    polyrhythm, ornaments, repeat/volta/cadence structure
+      ↓
+segment             [Claude] → N sections, bounded by real musical structure
+      ↓
+   ┌── one parallel branch per section ──┐
+   │   analyze_section  [Claude]         │  challenges, techniques, risk measures
+   │   design_drills    [Claude]         │  ordered steps, tempo ladder, focus ranges
+   └─────────────────────────────────────┘
+      ↓
+validate            ~20 deterministic assertions → report
+      ↓
+critique            [Claude] approve or revise (max 2 rounds)
+      ↓
+persist             Supabase
+```
+
+**There is no fixed section count.** The segmenter is given a definition of what a
+section is — a practice-sized, musically coherent unit bounded by repeats, double
+barlines, key changes or cadences — and lets the music decide. A 16-measure minuet
+yields 1–2 sections; a long sonata movement yields 15–25.
+
+**Cost guards**, cheapest first:
+
+| Guard | Where | Limit |
+|---|---|---|
+| Page count | `sheet_music_detector.py` (before any rendering) | 20 pages |
+| File size | `routers/sheet_music.py` | 25 MB |
+| Measure count | `graph/features.py`, before the fan-out | 400 measures |
+| Section fan-out | `graph/nodes.py` | 30 sections |
+
+The fan-out is where the money goes — N sections means 2N calls — so all N branches
+share one cached prefix (`cache_control` on the system prompt and the feature table).
+Check `cache_read_input_tokens` in the logs; if it's zero on branches 2..N, something
+volatile leaked into the prefix.
+
+If the graph fails for any reason, `_fallback_plan` writes a deterministic plan rather
+than failing the piece — a mediocre plan beats `status: "failed"`.
+
+### Tests
+
+```bash
+cd backend
+python tests/test_graph.py       # validator + reducer invariants
+python tests/test_graph_flow.py  # full graph with a stubbed model
+```
+
+Both run offline and spend no tokens.
 
 ## Requirements
 

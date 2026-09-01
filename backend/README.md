@@ -27,6 +27,14 @@ Copy `.env.local.example` to `.env.local` and fill in all values.
 | `FRONTEND_URL` | Yes | Production CORS allowed origin (the Vercel URL) |
 | `FRONTEND_DEV_URL` | No | Local CORS origin (e.g. `http://localhost:3000`); set in `.env.local` for local dev |
 | `AUDIVERIS_PATH` | No | Full path to Audiveris executable if not on system PATH (set automatically in the Docker image) |
+| `DATABASE_URL` | No | Postgres connection string for LangGraph checkpointing. Without it the planning graph still runs, but a mid-run restart cannot resume. |
+
+## Database migrations
+
+Run in the Supabase SQL editor, in order. `migrations/001_planning_graph.sql` is
+**required** before deploying the planning graph — the processor writes
+`pieces.processing_stage` and four new `plan_steps` columns, and the inserts fail
+without them.
 
 > **CORS:** the server allows whichever of `FRONTEND_URL` / `FRONTEND_DEV_URL` are set (see `app/main.py`). Locally `.env.local` provides both, so `localhost:3000` and the deployed frontend both work. In production only `FRONTEND_URL` is set as a Fly secret, so only the Vercel origin is allowed.
 >
