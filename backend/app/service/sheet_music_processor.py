@@ -9,6 +9,7 @@ from music21 import converter
 
 from supabase import create_client
 
+from app import schema
 from app.graph import features as feat
 from app.graph.build import build, postgres_checkpointer
 
@@ -92,13 +93,10 @@ class SheetMusicProcessor:
         """
         if not self.supabase:
             return None
-        try:
-            self.supabase.table("plan_steps").select(
-                "focus_start_measure, focus_end_measure, success_criterion, source"
-            ).limit(1).execute()
+        missing = schema.check(self.supabase)
+        if not missing:
             return None
-        except Exception as e:
-            return f"plan_steps is missing migration 001 columns ({e})"
+        return "; ".join(f"{table}: {', '.join(cols)}" for table, cols in missing.items())
 
     def _profile(self, user_id: Optional[str]) -> dict:
         """Collected at onboarding and, until now, never used by the planner."""
@@ -136,7 +134,10 @@ class SheetMusicProcessor:
             difficulty = 20
             if first_part:
                 notes, counted = 0, 0
-                for m in first_part.measures(start, end):
+                # .measures() returns a Stream carrying the part's Instrument
+                # alongside the measures; iterating it raw hands an Instrument
+                # to .recurse() and throws.
+                for m in first_part.measures(start, end).getElementsByClass("Measure"):
                     counted += 1
                     notes += len(list(m.recurse().getElementsByClass("Note")))
                 avg = notes / counted if counted else 0
@@ -193,6 +194,11 @@ class SheetMusicProcessor:
         regenerated with fresh UUIDs, every future mastery and progress row
         keyed on section_id would orphan silently.
         """
+        # PostgREST turns insert([]) into "?columns=()" and answers with an
+        # opaque PGRST100 parse error, so never hand it an empty plan.
+        if not plan.get("sections"):
+            raise ValueError("refusing to persist a plan with no sections")
+
         plan_id = str(uuid.uuid4())
         sections_db, steps_db = [], []
 

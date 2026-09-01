@@ -3,6 +3,7 @@ import os
 from typing import Annotated
 import uuid
 from fastapi import APIRouter, Depends, UploadFile, File, BackgroundTasks, Form
+from app import schema
 from app.service.sheet_music_detector import (
     SheetMusicDetector,
     get_sheet_music_detector,
@@ -15,6 +16,25 @@ from app.service.sheet_music_processor import (
 router = APIRouter(prefix="/sheet_music", tags=["sheet_music"])
 
 MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
+
+@router.get("/schema")
+async def check_schema(
+    service: SheetMusicProcessor = Depends(get_sheet_music_processor),
+):
+    """Report any expected table/column the database is missing.
+
+    `{"up_to_date": true}` means every migration has been applied.
+    """
+    if not service.supabase:
+        return {"up_to_date": False, "error": "supabase client not initialised"}
+
+    missing = schema.check(service.supabase)
+    return {
+        "up_to_date": not missing,
+        "missing": missing,
+        "hint": None if not missing else "run the SQL in backend/migrations/ in order",
+    }
 
 
 @router.post("/detector")

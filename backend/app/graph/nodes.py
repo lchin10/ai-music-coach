@@ -122,6 +122,17 @@ def segment(state):
         thinking=True,
     )
 
+    print(
+        f"[graph] segmenter returned {len(result['sections'])} sections "
+        f"for measures {first}-{last}"
+    )
+    if not result["sections"]:
+        # Silently returning nothing here used to produce an empty fan-out, an
+        # empty plan, and a confusing PostgREST error at insert time.
+        raise RuntimeError(
+            f"segmenter returned no sections for measures {first}-{last}"
+        )
+
     sections = result["sections"][:MAX_SECTIONS]
     if len(result["sections"]) > MAX_SECTIONS:
         print(
