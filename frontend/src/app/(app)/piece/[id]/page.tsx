@@ -2,21 +2,16 @@
 
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
-import dynamic from "next/dynamic";
 import { supabase } from "@/lib/supabaseClient";
 import useSession from "@/lib/userSession";
-import useScoreXml from "@/lib/useScoreXml";
-
-// OSMD touches window/DOM — it must never run during the server render.
-const Score = dynamic(() => import("@/components/Score"), { ssr: false });
+import ScorePages, { type PageImage } from "@/components/ScorePages";
 
 type Piece = {
   id: string;
   title: string;
   status: string;
   created_at: string;
-  musicxml_path: string | null;
-  measure_offset: number | null;
+  page_images: PageImage[] | null;
 };
 
 type Section = {
@@ -89,8 +84,7 @@ export default function PiecePage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
 
-  const { xml, error: xmlError } = useScoreXml(piece?.musicxml_path);
-  const offset = piece?.measure_offset ?? 1;
+  const pageImages = piece?.page_images ?? [];
 
   useEffect(() => {
     if (!session || !id) return;
@@ -99,7 +93,7 @@ export default function PiecePage() {
       const [pieceRes, sectionsRes, planRes] = await Promise.all([
         supabase
           .from("pieces")
-          .select("id, title, status, created_at, musicxml_path, measure_offset")
+          .select("id, title, status, created_at, page_images")
           .eq("id", id)
           .single(),
         supabase.from("sections").select("*").eq("piece_id", id).order("start_measure"),
@@ -166,12 +160,11 @@ export default function PiecePage() {
               </button>
             )}
           </div>
-          {!piece.musicxml_path && (
+          {pageImages.length === 0 && (
             <p className="mt-3 text-xs text-zinc-500">
-              Notation isn&apos;t available for this piece — re-upload it to see the bars.
+              Notation isn&apos;t available for this piece — re-upload it to see the score.
             </p>
           )}
-          {xmlError && <p className="mt-3 text-xs text-zinc-500">Score unavailable — {xmlError}</p>}
         </div>
 
         {/* Sections */}
@@ -216,12 +209,11 @@ export default function PiecePage() {
                       N live OSMD instances. */}
                   {isOpen && (
                     <div className="flex flex-col gap-5 border-t border-white/10 px-6 pb-6 pt-5">
-                      {xml && (
-                        <Score
-                          xml={xml}
+                      {pageImages.length > 0 && (
+                        <ScorePages
+                          pages={pageImages}
                           fromMeasure={section.start_measure}
                           toMeasure={section.end_measure}
-                          measureOffset={offset}
                         />
                       )}
 

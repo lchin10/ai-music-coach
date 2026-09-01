@@ -265,6 +265,36 @@ def _derived(rows):
     return rows
 
 
+def page_ranges(score, first_measure: int) -> list:
+    """Which of our measure numbers live on which page of the source PDF.
+
+    Audiveris records page breaks in the MusicXML, so this is read from the
+    score rather than guessed. Used to show the real engraving for a section
+    instead of a re-render of the OMR output, which drops fingerings,
+    dynamics and — on dense scores — notes.
+
+    Returns [{page, start_measure, end_measure}] using OUR numbering, so it
+    lines up with sections.start_measure.
+    """
+    measures = list(score.parts[0].getElementsByClass("Measure"))
+    page, pages = 0, {}
+
+    for index, measure in enumerate(measures):
+        if any(
+            getattr(layout, "isNew", False)
+            for layout in measure.getElementsByClass("PageLayout")
+        ):
+            page += 1
+        our_measure = first_measure + index
+        bounds = pages.setdefault(page, [our_measure, our_measure])
+        bounds[1] = our_measure
+
+    return [
+        {"page": page, "start_measure": start, "end_measure": end}
+        for page, (start, end) in sorted(pages.items())
+    ]
+
+
 def extract(score) -> dict:
     """music21 Score -> {score-level metadata, per-measure feature table}.
 
@@ -342,6 +372,8 @@ def extract(score) -> dict:
             f"measure range {score_level['first_measure']}-{score_level['last_measure']} "
             f"spans {span} measures but the table holds {len(rows)}"
         )
+
+    score_level["page_ranges"] = page_ranges(score, score_level["first_measure"])
 
     return {"score": score_level, "measures": _derived(rows)}
 
