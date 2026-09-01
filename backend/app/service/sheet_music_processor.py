@@ -98,6 +98,39 @@ class SheetMusicProcessor:
             return None
         return "; ".join(f"{table}: {', '.join(cols)}" for table, cols in missing.items())
 
+    def _store_musicxml(self, piece_id: str, user_id: Optional[str], path: str, features: dict):
+        """Upload the score to the `pieces` bucket so the UI can render bars.
+
+        Non-fatal: a piece with a plan but no notation is still useful, and
+        losing the whole plan over a failed upload would not be.
+        """
+        if not (self.supabase and piece_id):
+            return
+
+        offset = features["score"].get("first_measure", 1)
+        try:
+            with open(path, "rb") as f:
+                data = f.read()
+
+            folder = user_id or "anonymous"
+            key = f"{folder}/{piece_id}{os.path.splitext(path)[1] or '.mxl'}"
+            self.supabase.storage.from_("pieces").upload(
+                key,
+                data,
+                {"content-type": "application/vnd.recordare.musicxml", "upsert": "true"},
+            )
+            self.supabase.table("pieces").update(
+                {"musicxml_path": key, "measure_offset": offset}
+            ).eq("id", piece_id).execute()
+            print(f"[processor] Stored MusicXML at {key} ({len(data)} bytes, offset {offset})")
+        except Exception as e:
+            print(f"[processor] could not store MusicXML (notation will be unavailable): {e}")
+            # The offset is still worth recording even if the upload failed.
+            try:
+                self.supabase.table("pieces").update({"measure_offset": offset}).eq("id", piece_id).execute()
+            except Exception:
+                pass
+
     def _profile(self, user_id: Optional[str]) -> dict:
         """Collected at onboarding and, until now, never used by the planner."""
         if not (self.supabase and user_id):
@@ -294,6 +327,11 @@ class SheetMusicProcessor:
                 f"{len(features['score']['repeat_barlines'])} repeats, "
                 f"{len(features['score']['double_barlines'])} double barlines"
             )
+
+            # Keep the MusicXML — the frontend renders notation straight from
+            # it. Without this the temp dir takes it and there is nothing to
+            # draw the bars a drill refers to.
+            self._store_musicxml(piece_id, user_id, musicxml_path, features)
 
             plan = self._run_graph(piece_id, user_id, features)
             if plan is None:

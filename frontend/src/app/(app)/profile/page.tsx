@@ -18,6 +18,7 @@ type Piece = {
 	created_at: string;
 	status: string;
 	file_path: string;
+	musicxml_path: string | null;
 	failure_reason: string | null;
 };
 
@@ -47,7 +48,7 @@ export default function ProfilePage() {
 			setProfile(res.profile);
 
       // Pieces
-      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path, failure_reason").eq("user_id", session.user.id);
+      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path, musicxml_path, failure_reason").eq("user_id", session.user.id);
       if (piecesError) {
         return;
       }
@@ -107,7 +108,10 @@ export default function ProfilePage() {
 
 		setIsDeleting(true);
 
-		const { error: storageError } = await supabase.storage.from("pieces").remove([piece.file_path]);
+		// The stored MusicXML lives in the same bucket and would otherwise be
+		// orphaned when the piece goes.
+		const paths = [piece.file_path, piece.musicxml_path].filter(Boolean) as string[];
+		const { error: storageError } = await supabase.storage.from("pieces").remove(paths);
 		const { error: dbError } = await supabase.from("pieces").delete().eq("id", piece.id);
 
 		setIsDeleting(false);
