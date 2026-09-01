@@ -7,6 +7,12 @@ import useSession from "@/lib/userSession";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
+const REJECTION_MESSAGES: Record<string, string> = {
+	too_many_pages: "That looks like a whole book. Please upload a single piece.",
+	too_large: "That file is too large. Please upload a single piece.",
+	no_notation: "This PDF doesn't appear to contain sheet music. Please try another file.",
+};
+
 export default function UploadPage() {
 	const { session, loading } = useSession();
 	const [selectedFile, setSelectedFile] = useState<File | null>(null);
@@ -67,7 +73,7 @@ export default function UploadPage() {
 			});
 			const detectorData = await detectorResp.json();
 			if (!detectorData.sheet_music) {
-				throw new Error("This PDF doesn't appear to contain sheet music. Please try another file.");
+				throw new Error(REJECTION_MESSAGES[detectorData.reason] ?? REJECTION_MESSAGES.no_notation);
 			}
 
 			// Upload to Supabase storage

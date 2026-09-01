@@ -5,6 +5,11 @@ from PIL import Image
 import io
 import fitz  # PyMuPDF
 
+# A piano piece is typically 2-12 pages; a fake book or anthology is 50-200.
+# Rejecting here costs nothing — this runs before Audiveris and before any
+# LLM call — and it is what stops someone uploading a whole songbook.
+MAX_PAGES = 20
+
 
 class SheetMusicDetector:
   def __init__(self):
@@ -22,16 +27,8 @@ class SheetMusicDetector:
   # ---------------------------
   # PDF → images
   # ---------------------------
-  def pdf_to_images(self, pdf_bytes):
-    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
-    images = []
-
-    for page in doc:
-      pix = page.get_pixmap()
-      img_bytes = pix.pil_tobytes(format="PNG")
-      images.append(img_bytes)
-
-    return images
+  def page_image(self, page):
+    return page.get_pixmap().pil_tobytes(format="PNG")
 
   # ---------------------------
   # Preprocessing
@@ -171,10 +168,20 @@ class SheetMusicDetector:
   # Main API
   # ---------------------------
   def detect(self, pdf_bytes):
-    images = self.pdf_to_images(pdf_bytes)
+    doc = fitz.open(stream=pdf_bytes, filetype="pdf")
 
-    for img in images:
-      result = self.score_page(img)
+    if doc.page_count > MAX_PAGES:
+      return {
+          "sheet_music": False,
+          "reason": "too_many_pages",
+          "pages": doc.page_count,
+          "max_pages": MAX_PAGES,
+      }
+
+    # Render pages one at a time and stop at the first hit — page 1 is
+    # usually enough, so there is no reason to rasterise the whole document.
+    for page in doc:
+      result = self.score_page(self.page_image(page))
 
       if result["score"] >= 3:
         return {
@@ -183,7 +190,8 @@ class SheetMusicDetector:
         }
 
     return {
-        "sheet_music": False
+        "sheet_music": False,
+        "reason": "no_notation",
     }
 
 

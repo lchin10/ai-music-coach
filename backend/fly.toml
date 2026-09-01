@@ -33,4 +33,4 @@ primary_region = "iad" # US East; pick the region closest to your Supabase proje
 
 [[vm]]
   size = "shared-cpu-1x"
-  memory = "1gb" # bump with `fly scale memory 2048` if Audiveris OOMs on large scores
+  memory = "2gb" # bump to "4gb" (or `fly scale memory 4096`) if Audiveris still OOMs on large scores

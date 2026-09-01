@@ -14,6 +14,8 @@ from app.service.sheet_music_processor import (
 
 router = APIRouter(prefix="/sheet_music", tags=["sheet_music"])
 
+MAX_UPLOAD_BYTES = 25 * 1024 * 1024
+
 
 @router.post("/detector")
 async def check_sheet_music(
@@ -21,6 +23,15 @@ async def check_sheet_music(
     service: SheetMusicDetector = Depends(get_sheet_music_detector),
 ):
     file_bytes = await pdf_file.read()
+
+    if len(file_bytes) > MAX_UPLOAD_BYTES:
+        return {
+            "sheet_music": False,
+            "reason": "too_large",
+            "bytes": len(file_bytes),
+            "max_bytes": MAX_UPLOAD_BYTES,
+        }
+
     result = service.detect(file_bytes)
     print(result)
     return result

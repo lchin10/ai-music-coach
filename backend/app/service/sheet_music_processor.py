@@ -5,81 +5,12 @@ import tempfile
 import subprocess
 from typing import Optional
 
-import anthropic
 from music21 import converter
 
 from supabase import create_client
 
-
-PRACTICE_PLAN_TOOL = {
-    "name": "create_practice_plan",
-    "description": "Create a structured practice plan for a piece of sheet music.",
-    "input_schema": {
-        "type": "object",
-        "required": ["sections"],
-        "properties": {
-            "sections": {
-                "type": "array",
-                "description": "3 to 5 sections dividing the piece into manageable chunks",
-                "items": {
-                    "type": "object",
-                    "required": ["title", "start_measure", "end_measure", "difficulty", "notes", "analysis_data", "steps"],
-                    "properties": {
-                        "title": {"type": "string", "description": "Short descriptive name, e.g. 'Opening Theme'"},
-                        "start_measure": {"type": "integer"},
-                        "end_measure": {"type": "integer"},
-                        "difficulty": {"type": "integer", "description": "0 (very easy) to 100 (extremely hard)"},
-                        "notes": {"type": "string", "description": "Musical observations about this section"},
-                        "analysis_data": {
-                            "type": "object",
-                            "properties": {
-                                "key_challenges": {"type": "array", "items": {"type": "string"}},
-                                "techniques": {"type": "array", "items": {"type": "string"}},
-                                "musical_character": {"type": "string"}
-                            }
-                        },
-                        "steps": {
-                            "type": "array",
-                            "description": "Ordered practice steps for this section (2-4 per section)",
-                            "items": {
-                                "type": "object",
-                                "required": ["title", "description", "target_tempo", "drill_type", "is_checkpoint", "unlock_requirement"],
-                                "properties": {
-                                    "title": {"type": "string"},
-                                    "description": {"type": "string", "description": "Specific instruction, e.g. 'Practice RH alone measures 12-20 at 60 bpm, focus on the leap from C4 to G5'"},
-                                    "target_tempo": {"type": "integer", "description": "Target BPM for this drill"},
-                                    "drill_type": {
-                                        "type": "string",
-                                        "enum": ["hands_separate", "hands_together", "loop", "slow_practice", "tempo_building", "rhythm_variation", "metronome", "articulation_focus", "checkpoint"]
-                                    },
-                                    "is_checkpoint": {"type": "boolean"},
-                                    "unlock_requirement": {"type": "integer", "description": "Mastery 0-100 required to unlock; 0 = always available"}
-                                }
-                            }
-                        }
-                    }
-                }
-            }
-        }
-    }
-}
-
-_SYSTEM_PROMPT = """You are an expert piano teacher creating detailed practice plans for students.
-
-Given a musical analysis of a piece, create a comprehensive practice plan that:
-1. Divides the piece into 3-5 logical sections based on musical structure (not just equal measure splits)
-2. For each section, provides 2-4 specific practice steps ordered beginner → advanced
-3. Each step has very specific instructions referencing actual musical elements (exact measure numbers, BPM, technique)
-4. Uses appropriate drill types and tempos based on the piece's actual tempo and difficulty
-5. Includes checkpoint steps to consolidate learning
-
-For piano pieces, the typical progression per section is:
-- Hands separate (slow)
-- Hands together (slow)
-- Tempo building
-- Checkpoint at or near performance tempo
-
-Be musical and specific — reference key signature, time signature, tempo markings, and the challenges you'd expect given the measure ranges and note density."""
+from app.graph import features as feat
+from app.graph.build import build, postgres_checkpointer
 
 
 class SheetMusicProcessor:
@@ -89,9 +20,6 @@ class SheetMusicProcessor:
         print("SUPABASE KEY PREFIX:", supabase_key[:20])
         print("Using service role:", bool(os.getenv("SUPABASE_SERVICE_ROLE_KEY")))
         self.supabase = create_client(supabase_url, supabase_key) if (supabase_url and supabase_key) else None
-
-        api_key = os.getenv("ANTHROPIC_API_KEY")
-        self.ai = anthropic.Anthropic(api_key=api_key) if api_key else None
 
     def _run_audiveris(self, pdf_path: str, outdir: str) -> Optional[str]:
         _default_win = r"C:\Program Files\Audiveris\Audiveris.exe"
@@ -107,7 +35,18 @@ class SheetMusicProcessor:
         cmd = [audiveris, "-batch", "-export", "-output", outdir, pdf_path]
         try:
             result = subprocess.run(cmd, check=True, stdout=subprocess.PIPE, stderr=subprocess.PIPE)
-            print(f"[processor] audiveris stdout: {result.stdout.decode()[:500]}")
+            print(f"[processor] audiveris stdout (tail): {result.stdout.decode(errors='replace')[-1500:]}")
+        except subprocess.CalledProcessError as e:
+            # Surface what Audiveris actually said — the cause is usually in the
+            # tail of stderr/stdout (e.g. a Java OutOfMemoryError or a step failure).
+            out = (e.stdout or b"").decode(errors="replace")
+            err = (e.stderr or b"").decode(errors="replace")
+            print(
+                f"[processor] ERROR: audiveris exited {e.returncode}\n"
+                f"--- audiveris stdout (tail) ---\n{out[-2000:]}\n"
+                f"--- audiveris stderr (tail) ---\n{err[-2000:]}"
+            )
+            return None
         except Exception as e:
             print(f"[processor] ERROR running audiveris: {e}")
             return None
@@ -120,107 +59,45 @@ class SheetMusicProcessor:
         print(f"[processor] ERROR: no MusicXML output found in {outdir}")
         return None
 
-    def _extract_music_context(self, score) -> dict:
-        context = {}
+    # ----------------------------------------------------------------------
+    # Supabase helpers
+    # ----------------------------------------------------------------------
 
-        if score.metadata and score.metadata.title:
-            context["title"] = score.metadata.title
+    def _stage(self, piece_id: str, stage: str):
+        """Per-node progress the upload-confirmation page can show."""
+        if self.supabase and piece_id:
+            self.supabase.table("pieces").update({"processing_stage": stage}).eq("id", piece_id).execute()
 
-        keys = list(score.flatten().getElementsByClass("KeySignature"))
-        if keys:
-            context["key"] = str(keys[0].asKey())
+    def _fail(self, piece_id: str, reason: str):
+        print(f"[processor] FAILED: {reason}")
+        if self.supabase and piece_id:
+            self.supabase.table("pieces").update(
+                {"status": "failed", "failure_reason": reason}
+            ).eq("id", piece_id).execute()
 
-        times = list(score.flatten().getElementsByClass("TimeSignature"))
-        if times:
-            context["time_signature"] = times[0].ratioString
-
-        tempos = list(score.flatten().getElementsByClass("MetronomeMark"))
-        if tempos:
-            mm = tempos[0]
-            if mm.number:
-                context["tempo_bpm"] = int(mm.number)
-            if mm.text:
-                context["tempo_text"] = mm.text
-
-        parts = list(score.parts)
-        context["parts"] = [p.partName or f"Part {i + 1}" for i, p in enumerate(parts)]
-
-        if parts:
-            first_part = parts[0]
-            measures = list(first_part.getElementsByClass("Measure"))
-            context["total_measures"] = len(measures)
-
-            note_density = [
-                len(list(m.recurse().getElementsByClass("Note")))
-                for m in measures
-            ]
-            if note_density:
-                avg = sum(note_density) / len(note_density)
-                context["avg_notes_per_measure"] = round(avg, 1)
-                context["max_notes_per_measure"] = max(note_density)
-                # Cap at 15 to keep the prompt concise
-                context["dense_measures"] = [
-                    i + 1 for i, n in enumerate(note_density) if n > avg * 1.5
-                ][:15]
-
-        return context
-
-    def _generate_plan_with_ai(self, context: dict) -> Optional[dict]:
-        if not self.ai:
-            return None
-
-        lines = []
-        if "title" in context:
-            lines.append(f"Title: {context['title']}")
-        if "key" in context:
-            lines.append(f"Key: {context['key']}")
-        if "time_signature" in context:
-            lines.append(f"Time signature: {context['time_signature']}")
-        if "tempo_bpm" in context:
-            tempo = f"{context['tempo_bpm']} BPM"
-            if "tempo_text" in context:
-                tempo = f"{context['tempo_text']} ({tempo})"
-            lines.append(f"Tempo: {tempo}")
-        if "total_measures" in context:
-            lines.append(f"Total measures: {context['total_measures']}")
-        if "parts" in context:
-            lines.append(f"Parts: {', '.join(context['parts'])}")
-        if "avg_notes_per_measure" in context:
-            lines.append(f"Average notes/measure: {context['avg_notes_per_measure']}")
-        if context.get("dense_measures"):
-            lines.append(f"High-density measures (likely difficult): {context['dense_measures']}")
-
+    def _profile(self, user_id: Optional[str]) -> dict:
+        """Collected at onboarding and, until now, never used by the planner."""
+        if not (self.supabase and user_id):
+            return {}
         try:
-            response = self.ai.messages.create(
-                model="claude-opus-4-8",
-                max_tokens=4096,
-                system=[
-                    {
-                        "type": "text",
-                        "text": _SYSTEM_PROMPT,
-                        "cache_control": {"type": "ephemeral"},
-                    }
-                ],
-                tools=[PRACTICE_PLAN_TOOL],
-                tool_choice={"type": "tool", "name": "create_practice_plan"},
-                messages=[
-                    {
-                        "role": "user",
-                        "content": f"Create a detailed practice plan for this piece:\n\n{chr(10).join(lines)}",
-                    }
-                ],
+            response = (
+                self.supabase.table("profiles")
+                .select("piano_level, years_experience")
+                .eq("id", user_id)
+                .single()
+                .execute()
             )
+            return response.data or {}
         except Exception as e:
-            print(f"[processor] AI generation failed, using fallback: {e}")
-            return None
+            print(f"[processor] could not load profile: {e}")
+            return {}
 
-        for block in response.content:
-            if block.type == "tool_use" and block.name == "create_practice_plan":
-                return block.input
-
-        return None
+    # ----------------------------------------------------------------------
+    # Fallback
+    # ----------------------------------------------------------------------
 
     def _fallback_plan(self, score) -> dict:
+        """Deterministic safety net. A mediocre plan beats status: failed."""
         parts = list(score.parts)
         first_part = parts[0] if parts else None
         total = len(list(first_part.getElementsByClass("Measure"))) if first_part else 30
@@ -241,18 +118,20 @@ class SheetMusicProcessor:
                 difficulty = 20 if avg < 5 else 40 if avg < 10 else 60 if avg < 20 else 80 if avg < 30 else 100
 
             sections.append({
+                "index": i,
                 "title": f"Section {i + 1} (mm. {start}–{end})",
                 "start_measure": start,
                 "end_measure": end,
-                "difficulty": difficulty,
-                "notes": "",
-                "analysis_data": {},
+                "analysis": {"difficulty": difficulty},
                 "steps": [
                     {
                         "title": f"Hands separate, mm. {start}–{end}",
                         "description": f"Practice each hand alone through measures {start}–{end} at a slow, comfortable tempo.",
                         "target_tempo": 60,
                         "drill_type": "hands_separate",
+                        "focus_start_measure": start,
+                        "focus_end_measure": end,
+                        "success_criterion": "2 clean run-throughs per hand at 60 bpm",
                         "is_checkpoint": False,
                         "unlock_requirement": 0,
                     },
@@ -260,17 +139,88 @@ class SheetMusicProcessor:
                         "title": f"Hands together, mm. {start}–{end}",
                         "description": f"Combine both hands through measures {start}–{end}, prioritising accuracy over speed.",
                         "target_tempo": 60,
-                        "drill_type": "hands_together",
-                        "is_checkpoint": False,
+                        "drill_type": "checkpoint",
+                        "focus_start_measure": start,
+                        "focus_end_measure": end,
+                        "success_criterion": "2 clean run-throughs hands together at 60 bpm",
+                        "is_checkpoint": True,
                         "unlock_requirement": 50,
                     },
                 ],
             })
-        return {"sections": sections}
 
-    def process(self, pdf_bytes: bytes, piece_id: str, _user_id: Optional[str], file_name: str):
+        counter = 0
+        for section in sections:
+            for step in section["steps"]:
+                step["order_index"] = counter
+                counter += 1
+
+        return {"sections": sections, "structural_summary": ""}
+
+    # ----------------------------------------------------------------------
+    # Persistence
+    # ----------------------------------------------------------------------
+
+    def _persist(self, piece_id: str, plan: dict):
+        """Sections belong to the PIECE, not the plan version.
+
+        Plan revisions (Phase 3) rewrite plan_steps only. If sections were ever
+        regenerated with fresh UUIDs, every future mastery and progress row
+        keyed on section_id would orphan silently.
+        """
+        plan_id = str(uuid.uuid4())
+        sections_db, steps_db = [], []
+
+        for section in plan["sections"]:
+            section_id = str(uuid.uuid4())
+            analysis = section.get("analysis", {})
+            sections_db.append({
+                "id": section_id,
+                "piece_id": piece_id,
+                "title": section["title"],
+                "start_measure": section["start_measure"],
+                "end_measure": section["end_measure"],
+                "difficulty": analysis.get("difficulty", 50),
+                "notes": analysis.get("musical_character", ""),
+                "analysis_data": analysis,
+            })
+            for step in section["steps"]:
+                steps_db.append({
+                    "id": str(uuid.uuid4()),
+                    "plan_id": plan_id,
+                    "section_id": section_id,
+                    "order_index": step["order_index"],
+                    "title": step["title"],
+                    "description": step["description"],
+                    "target_tempo": step["target_tempo"],
+                    "drill_type": step["drill_type"],
+                    "focus_start_measure": step.get("focus_start_measure"),
+                    "focus_end_measure": step.get("focus_end_measure"),
+                    "success_criterion": step.get("success_criterion", ""),
+                    "source": "plan",
+                    "is_checkpoint": step.get("is_checkpoint", False),
+                    "unlock_requirement": step.get("unlock_requirement", 0),
+                })
+
+        if not self.supabase:
+            print("[processor] ERROR: supabase client not initialised — check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local")
+            return
+
+        print(f"[processor] Inserting {len(sections_db)} sections, {len(steps_db)} steps...")
+        self.supabase.table("sections").insert(sections_db).execute()
+        self.supabase.table("practice_plans").insert({"id": plan_id, "piece_id": piece_id, "version": 1}).execute()
+        self.supabase.table("plan_steps").insert(steps_db).execute()
+        self.supabase.table("pieces").update({"status": "ready", "processing_stage": "done"}).eq("id", piece_id).execute()
+        print("[processor] Done — piece marked ready")
+
+    # ----------------------------------------------------------------------
+    # Entry point
+    # ----------------------------------------------------------------------
+
+    def process(self, pdf_bytes: bytes, piece_id: str, user_id: Optional[str], file_name: str):
         print(f"[processor] Starting processing for piece_id={piece_id}, file={file_name}")
         tmpdir = tempfile.mkdtemp(prefix="smp_")
+        score = None
         try:
             pdf_path = os.path.join(tmpdir, file_name)
             with open(pdf_path, "wb") as f:
@@ -279,78 +229,90 @@ class SheetMusicProcessor:
             outdir = os.path.join(tmpdir, "out")
             os.makedirs(outdir, exist_ok=True)
 
+            self._stage(piece_id, "converting")
             musicxml_path = self._run_audiveris(pdf_path, outdir)
             if not musicxml_path:
-                if self.supabase and piece_id:
-                    self.supabase.table("pieces").update({"status": "failed", "failure_reason": "Conversion to MusicXML failed"}).eq("id", piece_id).execute()
+                self._fail(piece_id, "Conversion to MusicXML failed")
                 return
 
             print("[processor] Parsing MusicXML with music21...")
             score = converter.parse(musicxml_path)
             if not list(score.parts):
-                if self.supabase and piece_id:
-                    self.supabase.table("pieces").update({"status": "failed", "failure_reason": "No parts found in MusicXML"}).eq("id", piece_id).execute()
+                self._fail(piece_id, "No parts found in MusicXML")
                 return
 
-            context = self._extract_music_context(score)
-            print(f"[processor] Music context: {context}")
+            self._stage(piece_id, "analyzing")
+            try:
+                features = feat.extract(score)
+            except feat.TooLongError as e:
+                # The guard that actually protects the bill: reject before the
+                # fan-out, which is where the cost lives.
+                self._fail(piece_id, f"Piece is too long to plan: {e}. Try uploading one movement.")
+                return
 
-            print("[processor] Generating practice plan...")
-            plan = self._generate_plan_with_ai(context) or self._fallback_plan(score)
+            print(
+                f"[processor] {features['score']['total_measures']} measures, "
+                f"{len(features['score']['repeat_barlines'])} repeats, "
+                f"{len(features['score']['double_barlines'])} double barlines"
+            )
+
+            plan = self._run_graph(piece_id, user_id, features)
+            if plan is None:
+                print("[processor] graph failed — falling back to deterministic plan")
+                plan = self._fallback_plan(score)
+
             print(f"[processor] Plan has {len(plan['sections'])} sections")
-
-            plan_id = str(uuid.uuid4())
-            sections_db = []
-            plan_steps_db = []
-            global_order = 0
-
-            for sec in plan["sections"]:
-                section_id = str(uuid.uuid4())
-                sections_db.append({
-                    "id": section_id,
-                    "piece_id": piece_id,
-                    "title": sec["title"],
-                    "start_measure": sec["start_measure"],
-                    "end_measure": sec["end_measure"],
-                    "difficulty": sec["difficulty"],
-                    "notes": sec.get("notes", ""),
-                    "analysis_data": sec.get("analysis_data", {}),
-                })
-                for step in sec.get("steps", []):
-                    plan_steps_db.append({
-                        "id": str(uuid.uuid4()),
-                        "plan_id": plan_id,
-                        "section_id": section_id,
-                        "order_index": global_order,
-                        "title": step["title"],
-                        "description": step["description"],
-                        "target_tempo": step["target_tempo"],
-                        "drill_type": step["drill_type"],
-                        "is_checkpoint": step.get("is_checkpoint", False),
-                        "unlock_requirement": step.get("unlock_requirement", 0),
-                    })
-                    global_order += 1
-
-            if self.supabase:
-                print(f"[processor] Inserting {len(sections_db)} sections, {len(plan_steps_db)} steps...")
-                self.supabase.table("sections").insert(sections_db).execute()
-                self.supabase.table("practice_plans").insert({"id": plan_id, "piece_id": piece_id, "version": 1}).execute()
-                self.supabase.table("plan_steps").insert(plan_steps_db).execute()
-                self.supabase.table("pieces").update({"status": "ready"}).eq("id", piece_id).execute()
-                print("[processor] Done — piece marked ready")
-            else:
-                print("[processor] ERROR: supabase client not initialised — check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local")
+            self._persist(piece_id, plan)
 
         except Exception as e:
             print(f"[processor] EXCEPTION: {e}")
             import traceback; traceback.print_exc()
-            if self.supabase and piece_id:
-                self.supabase.table("pieces").update({"status": "failed", "failure_reason": str(e)}).eq("id", piece_id).execute()
+            if score is not None:
+                try:
+                    self._persist(piece_id, self._fallback_plan(score))
+                    return
+                except Exception as inner:
+                    print(f"[processor] fallback also failed: {inner}")
+            self._fail(piece_id, str(e))
         finally:
             try:
                 shutil.rmtree(tmpdir)
             except Exception:
                 pass
+
+    def _run_graph(self, piece_id: str, user_id: Optional[str], features: dict) -> Optional[dict]:
+        if not os.getenv("ANTHROPIC_API_KEY"):
+            print("[processor] ANTHROPIC_API_KEY unset — skipping graph")
+            return None
+
+        initial = {
+            "piece_id": piece_id,
+            "user_id": user_id,
+            "profile": self._profile(user_id),
+            "features": features,
+            "revisions": 0,
+        }
+        config = {"configurable": {"thread_id": piece_id}, "recursion_limit": 50}
+
+        try:
+            saver = postgres_checkpointer()
+            if saver is None:
+                return self._as_plan(build().invoke(initial, config))
+
+            with saver as checkpointer:
+                checkpointer.setup()
+                return self._as_plan(build(checkpointer).invoke(initial, config))
+        except Exception as e:
+            print(f"[processor] graph error: {e}")
+            import traceback; traceback.print_exc()
+            return None
+
+    @staticmethod
+    def _as_plan(state: dict) -> dict:
+        return {
+            "sections": state["sections"],
+            "structural_summary": state.get("structural_summary", ""),
+        }
 
 
 def get_sheet_music_processor() -> SheetMusicProcessor:
