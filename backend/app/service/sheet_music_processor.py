@@ -114,10 +114,12 @@ class SheetMusicProcessor:
 
             folder = user_id or "anonymous"
             key = f"{folder}/{piece_id}{os.path.splitext(path)[1] or '.mxl'}"
+            # .mxl is a zip container. The bucket must allow this type —
+            # see migrations/003_storage_mime.sql.
             self.supabase.storage.from_("pieces").upload(
                 key,
                 data,
-                {"content-type": "application/vnd.recordare.musicxml", "upsert": "true"},
+                {"content-type": "application/zip", "upsert": "true"},
             )
             self.supabase.table("pieces").update(
                 {"musicxml_path": key, "measure_offset": offset}

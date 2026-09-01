@@ -289,11 +289,22 @@ def extract(score) -> dict:
     numbers = [m.measureNumber for m in measures_by_part[0]]
     usable = (
         all(n is not None for n in numbers)
-        and len(set(numbers)) == len(numbers)
         and max(numbers) > 0
+        # Contiguous and ascending. Audiveris also emits numbering with GAPS
+        # (e.g. 39 measures numbered 0..44), which made the segmenter's
+        # instruction "tile measures 0 to 44" unsatisfiable against a table
+        # holding only 39 of them — it returned nothing at all. Renumbering
+        # guarantees the stated range and the rows always agree.
+        and numbers == list(range(numbers[0], numbers[0] + len(numbers)))
     )
     if not usable:
-        print("[features] measure numbering unusable - renumbering 1..N")
+        print(
+            f"[features] measure numbering unusable "
+            f"({len(numbers)} measures spanning {min(n for n in numbers if n is not None)}-"
+            f"{max(n for n in numbers if n is not None)}) - renumbering 1..N"
+            if all(n is not None for n in numbers)
+            else "[features] measure numbering unusable (missing numbers) - renumbering 1..N"
+        )
 
     rows = []
     for index in range(total):
@@ -320,6 +331,16 @@ def extract(score) -> dict:
     if score_level["last_measure"] <= score_level["first_measure"]:
         raise ValueError(
             f"unusable measure range {score_level['first_measure']}-{score_level['last_measure']}"
+        )
+
+    # The segmenter is told to tile first..last and is given these rows. If the
+    # range covers measures the table doesn't contain, that instruction cannot
+    # be satisfied and the model returns nothing.
+    span = score_level["last_measure"] - score_level["first_measure"] + 1
+    if span != len(rows):
+        raise ValueError(
+            f"measure range {score_level['first_measure']}-{score_level['last_measure']} "
+            f"spans {span} measures but the table holds {len(rows)}"
         )
 
     return {"score": score_level, "measures": _derived(rows)}
