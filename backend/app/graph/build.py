@@ -3,9 +3,13 @@
 The graph is pure: it takes a parsed score's features and returns a plan.
 Supabase writes stay in the processor so the whole pipeline is testable
 without a database.
-"""
 
-import os
+No checkpointer. Resume was never wired up — thread_id is the piece_id and
+the frontend mints a fresh UUID per upload, so no run ever loaded a prior
+checkpoint. It saved nothing and destroyed two paid runs (a pgbouncer param
+psycopg rejects, then a music21 Fraction msgpack couldn't pack). Recovery is
+a retry from scratch, which is a few minutes of Audiveris and one fan-out.
+"""
 
 from langgraph.graph import END, START, StateGraph
 
@@ -13,7 +17,7 @@ from app.graph import nodes
 from app.graph.state import PlanState
 
 
-def build(checkpointer=None):
+def build():
     graph = StateGraph(PlanState)
 
     graph.add_node("segment", nodes.segment)
@@ -36,24 +40,4 @@ def build(checkpointer=None):
     )
     graph.add_conditional_edges("apply_feedback", nodes.fan_out, ["analyze_section"])
 
-    return graph.compile(checkpointer=checkpointer)
-
-
-def postgres_checkpointer():
-    """Makes a Fly restart resumable instead of terminal.
-
-    Returns a context manager, or None when DATABASE_URL isn't configured —
-    the graph runs fine without it, just without resume.
-    """
-    url = os.getenv("DATABASE_URL")
-    if not url:
-        print("[graph] DATABASE_URL unset — running without checkpointing")
-        return None
-
-    try:
-        from langgraph.checkpoint.postgres import PostgresSaver
-    except ImportError:
-        print("[graph] langgraph-checkpoint-postgres not installed — no checkpointing")
-        return None
-
-    return PostgresSaver.from_conn_string(url)
+    return graph.compile()

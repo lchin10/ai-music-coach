@@ -3,6 +3,8 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+
+const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 import useSession from "@/lib/userSession";
 import ScorePages, { type PageImage } from "@/components/ScorePages";
 
@@ -12,6 +14,8 @@ type Piece = {
   status: string;
   created_at: string;
   page_images: PageImage[] | null;
+  plan_quality: string | null;
+  failure_reason: string | null;
 };
 
 type Section = {
@@ -83,8 +87,24 @@ export default function PiecePage() {
   const [steps, setSteps] = useState<PlanStep[]>([]);
   const [pageLoading, setPageLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
+  const [retrying, setRetrying] = useState(false);
 
   const pageImages = piece?.page_images ?? [];
+  const isFallback = piece?.plan_quality === "fallback";
+
+  const retry = async () => {
+    if (!piece) return;
+    setRetrying(true);
+    const body = new FormData();
+    body.append("piece_id", piece.id);
+    const res = await fetch(`${BACKEND_URL}/sheet_music/retry`, { method: "POST", body });
+    if (res.ok) {
+      // Processing runs in the background; the confirmation page polls for it.
+      router.push("/upload-confirmation");
+    } else {
+      setRetrying(false);
+    }
+  };
 
   useEffect(() => {
     if (!session || !id) return;
@@ -93,7 +113,7 @@ export default function PiecePage() {
       const [pieceRes, sectionsRes, planRes] = await Promise.all([
         supabase
           .from("pieces")
-          .select("id, title, status, created_at, page_images")
+          .select("id, title, status, created_at, page_images, plan_quality, failure_reason")
           .eq("id", id)
           .single(),
         supabase.from("sections").select("*").eq("piece_id", id).order("start_measure"),
@@ -166,6 +186,27 @@ export default function PiecePage() {
             </p>
           )}
         </div>
+
+        {isFallback && (
+          <div className="rounded-2xl border border-amber-500/30 bg-amber-500/5 p-5">
+            <div className="flex flex-wrap items-start justify-between gap-4">
+              <div className="min-w-0">
+                <p className="text-sm font-semibold text-amber-300">Quick plan</p>
+                <p className="mt-1 text-sm text-zinc-300">
+                  {piece.failure_reason ||
+                    "The full analysis didn't complete, so this plan splits the piece evenly rather than by musical structure."}
+                </p>
+              </div>
+              <button
+                onClick={retry}
+                disabled={retrying}
+                className="shrink-0 rounded-2xl bg-amber-500 px-5 py-2.5 text-sm font-semibold text-zinc-950 transition hover:bg-amber-400 disabled:opacity-60 cursor-pointer"
+              >
+                {retrying ? "Retrying…" : "Retry analysis"}
+              </button>
+            </div>
+          </div>
+        )}
 
         {/* Sections */}
         {sections.length === 0 ? (

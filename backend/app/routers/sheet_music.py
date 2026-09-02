@@ -74,6 +74,43 @@ async def process_sheet_music(
     return {"status": "processing_started"}
 
 
+@router.post("/retry")
+async def retry_piece(
+    background_tasks: BackgroundTasks,
+    piece_id: str = Form(...),
+    service: SheetMusicProcessor = Depends(get_sheet_music_processor),
+):
+    """Re-run processing for a piece already in the database.
+
+    Pulls the original PDF back out of storage, so the user doesn't re-upload.
+    Runs from scratch — there is no resume, which is exactly why checkpointing
+    was dropped: a clean re-run is a few minutes and one fan-out.
+    """
+    if not service.supabase:
+        return {"error": "storage unavailable"}
+
+    row = (
+        service.supabase.table("pieces")
+        .select("id, user_id, title, file_path")
+        .eq("id", piece_id)
+        .single()
+        .execute()
+    ).data
+    if not row or not row.get("file_path"):
+        return {"error": "piece not found"}
+
+    pdf_bytes = service.supabase.storage.from_("pieces").download(row["file_path"])
+
+    service.supabase.table("pieces").update(
+        {"status": "processing", "processing_stage": "queued", "failure_reason": None}
+    ).eq("id", piece_id).execute()
+
+    background_tasks.add_task(
+        service.process, pdf_bytes, piece_id, row.get("user_id"), row["title"]
+    )
+    return {"status": "processing_started"}
+
+
 @router.post("/create_section")
 async def create_test_section(
     piece_id: Annotated[

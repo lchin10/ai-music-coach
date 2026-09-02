@@ -15,11 +15,11 @@ dependencies = [
     "supabase",
     "python-multipart",
     "anthropic",
-    # LangGraph only — deliberately NOT langchain-anthropic. The nodes call the
+    # LangGraph only — deliberately NOT langchain-anthropic. Nodes call the
     # Anthropic SDK directly to keep adaptive thinking, effort, cache_control
     # and strict tools, none of which survive a LangChain model wrapper.
+    # No checkpoint backend: resume was never wired up (see graph/build.py).
     "langgraph",
-    "langgraph-checkpoint-postgres",
 ]
 
 [tool.setuptools]

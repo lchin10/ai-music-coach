@@ -121,6 +121,44 @@ def test_beginner_needs_hands_separate():
     assert any("hands_separate" in m for m in report["soft"]), report
 
 
+def test_features_are_msgpack_serializable():
+    """Graph state is msgpack-serialized by the Postgres checkpointer.
+
+    music21 returns Fraction for tuplet durations. One of those anywhere in
+    the tree failed the checkpoint write at the END of a run, discarding a
+    plan the whole fan-out had already been billed for.
+    """
+    import ormsgpack
+    from fractions import Fraction
+    from app.graph.features import plain
+
+    hostile = {
+        "score": {"total_measures": 56, "tempos": [{"bpm": 92}]},
+        "measures": [
+            {"m": 1, "shortest": Fraction(1, 3), "range": [33, 88], "tuplet": True},
+            {"m": 2, "shortest": Fraction(1, 6), "novelty": 1.5},
+        ],
+    }
+
+    try:
+        ormsgpack.packb(hostile)
+        raise AssertionError("expected raw Fractions to fail msgpack")
+    except TypeError:
+        pass
+
+    ormsgpack.packb(plain(hostile))  # must not raise
+    assert plain(hostile)["measures"][0]["shortest"] == 1 / 3
+
+
+def test_real_score_features_serialize():
+    """End to end on an actual score, including tuplets."""
+    import ormsgpack
+    from music21 import corpus
+    from app.graph import features as feat
+
+    ormsgpack.packb(feat.extract(corpus.parse("bach/bwv66.6")))
+
+
 def test_reducer_merges_out_of_order_branches():
     """Fan-out branches finish in any order; the reducer must key on index."""
     merged = replace_sections([], [{"index": 2, "title": "c"}])

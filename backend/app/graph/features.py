@@ -7,6 +7,7 @@ downstream call, which is why the rows are terse tuples rather than prose.
 """
 
 from collections import Counter
+from fractions import Fraction
 from statistics import mean
 
 # Anything above this is a book or an OMR blow-up, not a piece. Checked
@@ -31,8 +32,11 @@ def _max_melodic_interval(measure):
 
 
 def _shortest_duration(measure):
+    # quarterLength is a Fraction for tuplets. Feature rows end up in LangGraph
+    # state, which is msgpack-serialized by the checkpointer, and a Fraction
+    # kills that — after the whole fan-out has already been paid for.
     durs = [n.duration.quarterLength for n in measure.recurse().notes if n.duration.quarterLength]
-    return min(durs) if durs else 0
+    return float(min(durs)) if durs else 0
 
 
 def _measure_row(measure, part_index):
@@ -329,6 +333,36 @@ def page_ranges(score, first_measure: int) -> list:
     ]
 
 
+def plain(value):
+    """Coerce music21 / numpy scalars to plain JSON types, recursively.
+
+    Everything here goes into LangGraph state, which the Postgres checkpointer
+    serializes with msgpack. One exotic scalar anywhere in the tree fails the
+    write — and it fails at the END of the run, discarding a plan the fan-out
+    has already been billed for. Cheaper to normalise once at the boundary
+    than to chase each type as it appears.
+    """
+    if isinstance(value, dict):
+        return {k: plain(v) for k, v in value.items()}
+    if isinstance(value, (list, tuple)):
+        return [plain(v) for v in value]
+    if isinstance(value, bool) or value is None or isinstance(value, (str, int, float)):
+        return value
+    if isinstance(value, Fraction):
+        return float(value)
+    # numpy scalars and anything else numeric-ish
+    item = getattr(value, "item", None)
+    if callable(item):
+        try:
+            return plain(item())
+        except Exception:
+            pass
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return str(value)
+
+
 def extract(score) -> dict:
     """music21 Score -> {score-level metadata, per-measure feature table}.
 
@@ -410,7 +444,7 @@ def extract(score) -> dict:
     score_level["page_ranges"] = page_ranges(score, score_level["first_measure"])
     score_level["system_layout"] = system_layout(score, score_level["first_measure"])
 
-    return {"score": score_level, "measures": _derived(rows)}
+    return plain({"score": score_level, "measures": _derived(rows)})
 
 
 def extract_multi(scores: list, page_offsets: list) -> dict:
@@ -480,7 +514,7 @@ def extract_multi(scores: list, page_offsets: list) -> dict:
         "system_layout": layout,
         "segments": len(scores),
     })
-    return {"score": head, "measures": _derived(rows)}
+    return plain({"score": head, "measures": _derived(rows)})
 
 
 def to_prompt_table(features: dict) -> str:
