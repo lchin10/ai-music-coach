@@ -151,7 +151,18 @@ def _coach_note(authored: list, stage: str, a: int, b: int) -> str:
     return best
 
 
-def _step(section_id, stage, a, b, metronome, tempo, title, description, suffix=""):
+def _step(section_id, stage, a, b, metronome, tempo, title, instructions, suffix=""):
+    """`instructions` is a list of (lead, detail) pairs.
+
+    A drill read as one paragraph is a paragraph you skim. Split into a short
+    bolded instruction plus the reasoning underneath, it's something you can
+    glance at mid-passage and act on.
+    """
+    points = [
+        {"lead": lead, "detail": (detail or "").strip()}
+        for lead, detail in instructions
+        if lead
+    ]
     return {
         "key": f"{section_id}:{stage}:{a}-{b}{suffix}",
         "section_id": section_id,
@@ -161,9 +172,17 @@ def _step(section_id, stage, a, b, metronome, tempo, title, description, suffix=
         "metronome": metronome,
         "target_tempo": tempo,
         "title": title,
-        "description": description,
+        "instructions": points,
+        # Flat fallback, for anything that just wants text.
+        "description": " ".join(f"{p['lead']}. {p['detail']}" for p in points),
         "source": "ladder",
     }
+
+
+def _plan_note(authored, stage, a, b):
+    """The agent's prose for this rung, as a final instruction point."""
+    note = _coach_note(authored, stage, a, b)
+    return [("From your plan", note)] if note else []
 
 
 def _bars(a: int, b: int) -> str:
@@ -193,13 +212,24 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
     steps = []
 
     # 1. Notes — one chunk at a time, no metronome.
-    hands = "Hands separate first, then together" if level != "advanced" else "Read it through"
     for a, b in chunks:
+        hands = (
+            ("Read it through", f"Take {_bars(a, b)} straight off the page.")
+            if level == "advanced"
+            else ("Hands separate first",
+                  f"Right hand alone through {_bars(a, b)}, then left hand alone.")
+        )
         steps.append(_step(
             sid, "notes", a, b, METRONOME_OFF, None,
             f"Learn the notes — {_bars(a, b)}",
-            f"{hands}. No metronome and no tempo: find every note and the "
-            f"fingering you'll keep. " + _coach_note(authored, "notes", a, b),
+            [
+                hands,
+                ("Settle the fingering now",
+                 "Whatever you choose here is what your hands will remember, "
+                 "so choose it deliberately rather than landing on it twice."),
+                ("No metronome yet",
+                 "You can't click to notes you don't have."),
+            ] + _plan_note(authored, "notes", a, b),
         ))
 
     # 2. Thread — join the notes into a line, still free tempo.
@@ -207,9 +237,13 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
         steps.append(_step(
             sid, "thread", a, b, METRONOME_OFF, None,
             f"Thread it together — {_bars(a, b)}",
-            "Hands together, as slow as you need. Still no metronome — you're "
-            "connecting the notes, not timing them. "
-            + _coach_note(authored, "thread", a, b),
+            [
+                (f"Hands together, {_bars(a, b)}",
+                 "As slow as you need. The only goal is that the line doesn't stop."),
+                ("Still no metronome",
+                 "You're connecting the notes, not timing them — timing is the "
+                 "next rung."),
+            ] + _plan_note(authored, "thread", a, b),
         ))
 
     # 3. Rhythm — the FIRST metronome use, and only where the writing is
@@ -221,8 +255,14 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
             steps.append(_step(
                 sid, "rhythm", a, b, METRONOME_REQUIRED, floor,
                 f"Rhythm — {_bars(a, b)}",
-                f"Metronome on at {floor} bpm. Slow enough that both hands land "
-                f"exactly where they should. " + _coach_note(authored, "rhythm", a, b),
+                [
+                    (f"Metronome on at {floor} bpm",
+                     "Slow enough that both hands land exactly where they "
+                     "should, not almost."),
+                    ("Count the subdivision out loud",
+                     "When the hands drift apart, counting is what puts them "
+                     "back together."),
+                ] + _plan_note(authored, "rhythm", a, b),
             ))
 
     # 4. Technique — leaps, fast passagework, position shifts. Isolated.
@@ -233,9 +273,14 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
             steps.append(_step(
                 sid, "technique", a, b, METRONOME_OPTIONAL, floor,
                 f"Isolate the hard part — {_bars(a, b)}",
-                "This is one of the bars that breaks down first under tempo. "
-                "Drill it alone until the motion is comfortable. "
-                + _coach_note(authored, "technique", a, b),
+                [
+                    (f"Take {_bars(a, b)} on its own",
+                     "This is one of the bars flagged as breaking down first "
+                     "under tempo, so it earns its own drill."),
+                    ("Repeat the motion, not the passage",
+                     "Drill the physical movement until it stops feeling like "
+                     "a reach. Speed follows comfort, never the other way round."),
+                ] + _plan_note(authored, "technique", a, b),
             ))
 
     # 5. Pair the chunks up, minding every seam. A transition can be two beats
@@ -249,12 +294,18 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
 
             if flagged or whole:
                 ta, tb = max(start, seam), min(end, seam + 1)
+                landing = min(end, seam + 1)
                 step = _step(
                     sid, "transition", ta, tb, METRONOME_OPTIONAL, floor,
-                    f"The join into m. {min(end, seam + 1)}",
-                    f"Just the crossing — the last beat of m. {seam} into the "
-                    f"downbeat of m. {min(end, seam + 1)}. Two beats is a "
-                    f"legitimate thing to practise on its own.",
+                    f"The join into m. {landing}",
+                    [
+                        (f"Just the crossing into m. {landing}",
+                         f"The last beat of m. {seam} into the downbeat of "
+                         f"m. {landing}. Nothing before it, nothing after."),
+                        ("Two beats is a real drill",
+                         "Stop the moment you've landed, then start again. "
+                         "Most breakdowns happen at a join, not in a bar."),
+                    ],
                 )
                 if step["key"] not in seen:
                     seen.add(step["key"])
@@ -267,9 +318,14 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
             step = _step(
                 sid, "pair", a, b, METRONOME_OPTIONAL, floor,
                 f"Join them up — {_bars(a, b)}",
-                f"Play {_bars(a, b)} as one. Watch the seam at m. {seam} — "
-                f"that's where it comes apart. "
-                + _coach_note(authored, "pair", a, b),
+                [
+                    (f"Play {_bars(a, b)} as one",
+                     "You've done both halves separately. This is the first "
+                     "time they have to hold together."),
+                    (f"Watch the seam at m. {seam}",
+                     "That's where it comes apart. If it does, go back to the "
+                     "join alone rather than replaying the whole thing."),
+                ] + _plan_note(authored, "pair", a, b),
                 suffix=f"@{level_index}",
             )
             if step["key"] not in seen:
@@ -280,9 +336,14 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
     steps.append(_step(
         sid, "section", start, end, METRONOME_OPTIONAL, floor,
         f"The whole section — {_bars(start, end)}",
-        "Straight through, slowly. Metronome optional here: the point is the "
-        "notes and the hand positions holding up end to end. "
-        + _coach_note(authored, "section", start, end),
+        [
+            (f"Straight through, {_bars(start, end)}",
+             "Slowly, and without stopping to fix things. Note where it "
+             "wobbles and come back to those bars afterwards."),
+            ("Metronome optional",
+             "The point here is that the notes and hand positions hold up end "
+             "to end, not that they're in time yet."),
+        ] + _plan_note(authored, "section", start, end),
     ))
 
     # 7. Tempo, in rungs, stopping at target. Going faster is the student's
@@ -292,13 +353,18 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
         steps.append(_step(
             sid, "tempo", start, end, METRONOME_REQUIRED, bpm,
             f"Build tempo — {bpm} bpm",
-            f"Metronome at {bpm} bpm. Stay here until it's clean before moving "
-            f"up — going faster than you can play it teaches the mistakes. "
-            + _coach_note(authored, "tempo", start, end),
+            [
+                (f"Metronome at {bpm} bpm",
+                 "Stay on this rung until it's clean three times running "
+                 "before you move up."),
+                ("Don't outrun yourself",
+                 "Playing faster than you can control just rehearses the "
+                 "mistakes at speed."),
+            ] + _plan_note(authored, "tempo", start, end),
             suffix=f"@{bpm}",
         ))
 
-    return [dict(s, description=s["description"].strip()) for s in steps]
+    return steps
 
 
 def stage_progress(steps: list, nailed_keys: set) -> list:

@@ -6,8 +6,12 @@ import { supabase } from "@/lib/supabaseClient";
 import useSession from "@/lib/userSession";
 import ScorePages, { type PageImage } from "@/components/ScorePages";
 import { Metronome } from "@/lib/metronome";
+import { displayComposer, displayTitle } from "@/lib/pieceName";
+import FullScore from "@/components/FullScore";
 
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+
+type Instruction = { lead: string; detail: string };
 
 type Step = {
   key: string;
@@ -18,6 +22,7 @@ type Step = {
   metronome: "off" | "optional" | "required";
   target_tempo: number | null;
   title: string;
+  instructions: Instruction[] | null;
   description: string;
   source: string;
 };
@@ -79,8 +84,10 @@ export default function PracticePage() {
   const { session, loading } = useSession();
   const router = useRouter();
 
-  const [title, setTitle] = useState("");
+  const [name, setName] = useState({ title: "", composer: "" });
+  const [filePath, setFilePath] = useState<string | null>(null);
   const [pages, setPages] = useState<PageImage[]>([]);
+  const [railOpen, setRailOpen] = useState(true);
   const [state, setState] = useState<State | null>(null);
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
@@ -157,13 +164,14 @@ export default function PracticePage() {
     (async () => {
       const { data } = await supabase
         .from("pieces")
-        .select("title, page_images")
+        .select("title, work_title, composer, page_images, file_path")
         .eq("id", pieceId)
         .single();
       if (cancelled) return;
       if (data) {
-        setTitle(data.title);
+        setName({ title: displayTitle(data), composer: displayComposer(data) });
         setPages(data.page_images ?? []);
+        setFilePath(data.file_path ?? null);
       }
 
       const res = await fetch(`${BACKEND_URL}/practice/session/start`, {
@@ -263,8 +271,8 @@ export default function PracticePage() {
 
   if (loading || (!state && !error)) {
     return (
-      <main className="min-h-screen bg-zinc-950 px-6 py-12">
-        <div className="mx-auto h-64 max-w-5xl animate-pulse rounded-[2rem] bg-zinc-900" />
+      <main className="min-h-screen bg-zinc-950 p-6">
+        <div className="h-64 animate-pulse rounded-[2rem] bg-zinc-900" />
       </main>
     );
   }
@@ -276,27 +284,61 @@ export default function PracticePage() {
   const maxBpm = pushPast ? Math.round(rungCap * 1.3) : Math.max(rungCap, 60);
 
   return (
-    <main className="min-h-screen bg-zinc-950 px-6 py-10 text-white">
-      <div className="mx-auto flex w-full max-w-5xl flex-col gap-6">
-        <div className="flex items-center justify-between gap-4">
-          <button
-            onClick={() => router.push(`/piece/${pieceId}`)}
-            className="text-sm text-zinc-400 hover:text-white cursor-pointer"
-          >
-            ← {title || "Back to piece"}
-          </button>
-          {action?.why && <p className="text-xs text-zinc-500">{action.why}</p>}
+    <main className="min-h-screen bg-zinc-950 text-white">
+      {/* Header: the piece, not the filename. The back link is deliberately
+          small — during a session the music is the subject, not navigation. */}
+      <header className="flex items-start gap-4 border-b border-white/10 px-5 py-4">
+        <button
+          onClick={() => router.push(`/piece/${pieceId}`)}
+          aria-label="Back to piece"
+          className="mt-1 shrink-0 rounded-lg px-2 py-1 text-zinc-500 transition hover:bg-white/5 hover:text-white cursor-pointer"
+        >
+          ←
+        </button>
+        <div className="min-w-0">
+          <h1 className="truncate text-lg font-semibold leading-tight">
+            {name.title || "Practice"}
+          </h1>
+          {name.composer && (
+            <p className="truncate text-sm text-zinc-400">{name.composer}</p>
+          )}
         </div>
+        {action?.why && (
+          <p className="ml-auto hidden shrink-0 self-center text-xs text-zinc-500 lg:block">
+            {action.why}
+          </p>
+        )}
+      </header>
 
-        {error && (
-          <div className="rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
-            {error}
-          </div>
+      {error && (
+        <div className="mx-5 mt-4 rounded-2xl border border-rose-500/30 bg-rose-500/5 p-4 text-sm text-rose-300">
+          {error}
+        </div>
+      )}
+
+      <div className="flex items-start gap-5 p-5">
+        {!railOpen && (
+          <button
+            onClick={() => setRailOpen(true)}
+            aria-label="Show contents"
+            className="shrink-0 rounded-xl border border-white/10 bg-zinc-900/80 px-2.5 py-3 text-zinc-400 transition hover:text-white cursor-pointer"
+          >
+            ☰
+          </button>
         )}
 
-        <div className="grid gap-6 md:grid-cols-[15rem_1fr]">
-          {/* Contents + the stage rail */}
-          <aside className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-zinc-900/80 p-5">
+        {/* Contents + the stage rail, flush to the left edge. */}
+        <aside
+          className={`sticky top-5 flex-col gap-5 rounded-[2rem] border border-white/10 bg-zinc-900/80 p-5 ${
+            railOpen ? "flex w-60 shrink-0" : "hidden"
+          }`}
+        >
+          <button
+            onClick={() => setRailOpen(false)}
+            className="self-end text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"
+          >
+            ✕ hide
+          </button>
             <div className="flex flex-col gap-1.5">
               {state?.sections.map((s, i) => {
                 const current = s.id === action?.section_id;
@@ -350,8 +392,8 @@ export default function PracticePage() {
             )}
           </aside>
 
-          {/* The step */}
-          <section className="flex flex-col gap-5 rounded-[2rem] border border-white/10 bg-zinc-900/80 p-6">
+        {/* The step — takes whatever the rail leaves. */}
+        <section className="flex min-w-0 flex-1 flex-col gap-5 rounded-[2rem] border border-white/10 bg-zinc-900/80 p-6">
             {!step ? (
               <div className="py-16 text-center">
                 <p className="text-2xl font-semibold">
@@ -382,7 +424,32 @@ export default function PracticePage() {
                   />
                 )}
 
-                <p className="text-sm leading-relaxed text-zinc-300">{step.description}</p>
+                {/* Numbered, with the instruction bolded and the reasoning
+                    underneath — mid-passage you glance at this, you don't
+                    read it. */}
+                {step.instructions?.length ? (
+                  <ol className="flex list-none flex-col gap-3">
+                    {step.instructions.map((point, i) => (
+                      <li key={i} className="flex gap-3">
+                        <span className="mt-0.5 flex h-6 w-6 shrink-0 items-center justify-center rounded-full bg-zinc-800 text-xs font-bold text-zinc-400">
+                          {i + 1}
+                        </span>
+                        <div className="min-w-0">
+                          {point.lead && (
+                            <p className="text-sm font-semibold text-white">{point.lead}</p>
+                          )}
+                          {point.detail && (
+                            <p className="mt-0.5 text-sm leading-relaxed text-zinc-400">
+                              {point.detail}
+                            </p>
+                          )}
+                        </div>
+                      </li>
+                    ))}
+                  </ol>
+                ) : (
+                  <p className="text-sm leading-relaxed text-zinc-300">{step.description}</p>
+                )}
 
                 {/* Metronome. Locked until the notes are learned — this is the
                     whole point of the ladder, so it says why rather than just
@@ -439,34 +506,48 @@ export default function PracticePage() {
                   )}
                 </div>
 
-                <div className="flex flex-wrap items-center gap-3">
-                  <button
-                    onClick={struggle}
-                    disabled={!!busy}
-                    className="rounded-2xl bg-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50 cursor-pointer"
-                  >
-                    {busy === "struggling"
-                      ? secondTap
-                        ? "Breaking this down…"
-                        : "Narrowing…"
-                      : "Struggling"}
-                  </button>
-                  <button
-                    onClick={() => report("shaky")}
-                    disabled={!!busy}
-                    className="rounded-2xl bg-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50 cursor-pointer"
-                  >
-                    Shaky
-                  </button>
-                  <button
-                    onClick={() => report("nailed")}
-                    disabled={!!busy}
-                    className="rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:opacity-50 cursor-pointer"
-                  >
-                    Nailed it →
-                  </button>
+                <div className="flex flex-wrap items-start justify-between gap-4">
+                  {/* Left: the two ways this can go wrong. */}
+                  <div className="flex flex-col items-start gap-2">
+                    <div className="flex flex-wrap gap-3">
+                      <button
+                        onClick={struggle}
+                        disabled={!!busy}
+                        className="rounded-2xl bg-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50 cursor-pointer"
+                      >
+                        {busy === "struggling"
+                          ? secondTap
+                            ? "Breaking this down…"
+                            : "Narrowing…"
+                          : "Struggling"}
+                      </button>
+                      <button
+                        onClick={() => report("shaky")}
+                        disabled={!!busy}
+                        className="rounded-2xl bg-zinc-800 px-5 py-3 text-sm font-semibold text-zinc-200 transition hover:bg-zinc-700 disabled:opacity-50 cursor-pointer"
+                      >
+                        Shaky
+                      </button>
+                    </div>
+                    {history.current.length > 1 && (
+                      <button
+                        onClick={goBack}
+                        className="text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"
+                      >
+                        ← back a step
+                      </button>
+                    )}
+                  </div>
 
-                  <div className="ml-auto flex items-center gap-3">
+                  {/* Right: the way forward. */}
+                  <div className="flex flex-col items-end gap-2">
+                    <button
+                      onClick={() => report("nailed")}
+                      disabled={!!busy}
+                      className="rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-400 disabled:opacity-50 cursor-pointer"
+                    >
+                      Nailed it →
+                    </button>
                     {(step.stage === "notes" || step.stage === "thread") && (
                       <button
                         onClick={skip}
@@ -476,20 +557,15 @@ export default function PracticePage() {
                         I already know this
                       </button>
                     )}
-                    {history.current.length > 1 && (
-                      <button
-                        onClick={goBack}
-                        className="text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"
-                      >
-                        ← back
-                      </button>
-                    )}
                   </div>
                 </div>
               </>
             )}
-          </section>
-        </div>
+        </section>
+      </div>
+
+      <div className="px-5 pb-5">
+        <FullScore filePath={filePath} />
       </div>
     </main>
   );

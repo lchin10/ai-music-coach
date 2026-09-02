@@ -127,6 +127,20 @@ def test_dense_risk_forces_single_bar_chunks():
     assert chunk[0]["focus_end_measure"] == 3, chunk
 
 
+def test_every_step_carries_instruction_points():
+    """The UI renders these as a numbered list, so the shape is a contract."""
+    sec = section(risk=[5], techniques=["polyrhythm", "wide leaps"])
+    steps = ladder.build(sec) + remediate.narrow(ladder.build(sec)[0], sec)
+    for step in steps:
+        points = step["instructions"]
+        assert len(points) >= 1, step["title"]
+        for point in points:
+            assert point["lead"], step["title"]
+            # A bolded lead with nothing under it is just a sentence in bold.
+            assert point["detail"], (step["title"], point["lead"])
+            assert len(point["lead"]) < 90, point["lead"]
+
+
 def test_authored_prose_is_borrowed_by_the_matching_stage():
     authored = [{
         "drill_type": "tempo_building",

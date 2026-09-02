@@ -14,7 +14,7 @@ from supabase import create_client
 from app import schema
 from app.graph import features as feat
 from app.graph.build import build
-from app.service import page_crops
+from app.service import identify, page_crops
 
 # 150 keeps a page legible on a laptop at roughly 200-400 KB.
 PAGE_IMAGE_DPI = 150
@@ -137,6 +137,26 @@ class SheetMusicProcessor:
         if not missing:
             return None
         return "; ".join(f"{table}: {', '.join(cols)}" for table, cols in missing.items())
+
+    def _store_identity(self, piece_id: str, features: dict, file_name: str, score):
+        """Record what the piece actually is, rather than its filename.
+
+        Non-fatal, like the other cosmetic writes — a piece named after its
+        upload is still perfectly usable.
+        """
+        if not (self.supabase and piece_id):
+            return
+        try:
+            extra = {}
+            if score is not None and score.metadata:
+                extra["ocr_contributors"] = [
+                    (c.role, str(c.name)) for c in (score.metadata.contributors or [])
+                ]
+            self.supabase.table("pieces").update(
+                identify.identify(features, file_name, extra)
+            ).eq("id", piece_id).execute()
+        except Exception as e:
+            print(f"[processor] could not store the piece's identity: {e}")
 
     def _store_musicxml(self, piece_id: str, user_id: Optional[str], path: str, features: dict):
         """Upload the score to the `pieces` bucket so the UI can render bars.
@@ -471,6 +491,7 @@ class SheetMusicProcessor:
             # draw the bars a drill refers to.
             self._store_musicxml(piece_id, user_id, musicxml_paths[0], features)
             self._store_page_images(piece_id, user_id, pdf_bytes, features)
+            self._store_identity(piece_id, features, file_name, score)
 
             plan = self._run_graph(piece_id, user_id, features)
             quality, reason = "full", ""
