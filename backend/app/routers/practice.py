@@ -109,6 +109,7 @@ def state(world: dict, session_id: Optional[str] = None) -> dict:
     )
 
     nailed = {a["step_key"] for a in world["attempts"] if a.get("self_report") == "nailed"}
+    visited = {a["step_key"] for a in world["attempts"]}
     locked = scheduler.locked_sections(world["sections"], world["ladders"], nailed)
 
     sections = []
@@ -125,15 +126,14 @@ def state(world: dict, session_id: Optional[str] = None) -> dict:
             "reached_stage": done,
             "complete": done == "tempo",
             "locked": section["id"] in locked,
+            # The rungs ride along trimmed — key, label and status only. The
+            # full step (instructions and all) is fetched by /practice/step
+            # when one is actually opened, so the rail stays cheap to send on
+            # every tap.
+            "stages": ladder.stage_progress(steps, nailed, visited),
         })
 
-    current = action.get("section_id")
-    return {
-        "session_id": session_id,
-        "action": action,
-        "sections": sections,
-        "stages": ladder.stage_progress(world["ladders"].get(current, []), nailed),
-    }
+    return {"session_id": session_id, "action": action, "sections": sections}
 
 
 # --------------------------------------------------------------------------
@@ -158,6 +158,22 @@ async def start(body: StartBody):
 @router.get("/next")
 async def next_step(user_id: str, piece_id: str, session_id: str = None):
     return state(load(user_id, piece_id), session_id)
+
+
+@router.get("/step")
+async def one_step(user_id: str, piece_id: str, step_key: str):
+    """The full rung behind a sidebar entry.
+
+    The rail only carries labels and status; the instructions are fetched when
+    a student actually jumps to a rung, which is rare compared to tapping
+    through the ladder in order.
+    """
+    world = load(user_id, piece_id)
+    for steps in list(world["ladders"].values()) + [world["remediation"]]:
+        for step in steps:
+            if step["key"] == step_key:
+                return {"step": step}
+    return {"error": "step not found"}
 
 
 class AttemptBody(BaseModel):
