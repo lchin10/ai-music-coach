@@ -265,6 +265,40 @@ def _derived(rows):
     return rows
 
 
+def system_layout(score, first_measure: int) -> list:
+    """Where each system sits, in reading order.
+
+    Returns [{page, system, start_measure, end_measure}] using OUR measure
+    numbering. Page and system breaks come from the MusicXML, which Audiveris
+    records reliably even when it mangles the notes.
+    """
+    measures = list(score.parts[0].getElementsByClass("Measure"))
+    rows, page, system = [], 0, 0
+
+    for index, measure in enumerate(measures):
+        new_page = any(
+            getattr(x, "isNew", False) for x in measure.getElementsByClass("PageLayout")
+        )
+        new_system = any(
+            getattr(x, "isNew", False) for x in measure.getElementsByClass("SystemLayout")
+        )
+        if new_page:
+            page += 1
+            system = 0
+        elif new_system and index > 0:
+            system += 1
+
+        our = first_measure + index
+        if rows and rows[-1]["page"] == page and rows[-1]["system"] == system:
+            rows[-1]["end_measure"] = our
+        else:
+            rows.append(
+                {"page": page, "system": system, "start_measure": our, "end_measure": our}
+            )
+
+    return rows
+
+
 def page_ranges(score, first_measure: int) -> list:
     """Which of our measure numbers live on which page of the source PDF.
 
@@ -374,8 +408,79 @@ def extract(score) -> dict:
         )
 
     score_level["page_ranges"] = page_ranges(score, score_level["first_measure"])
+    score_level["system_layout"] = system_layout(score, score_level["first_measure"])
 
     return {"score": score_level, "measures": _derived(rows)}
+
+
+def extract_multi(scores: list, page_offsets: list) -> dict:
+    """Extract one piece that Audiveris split across several exports.
+
+    Audiveris emits a separate .mxl per "movement", and it invents movement
+    breaks on a single-movement piece — the Rachmaninoff test score came back
+    as a 39-measure mvt1 and a 17-measure mvt2, so planning only the first file
+    silently covered half the piece.
+
+    Segments are concatenated rather than merged as music21 Scores: the split
+    can change the stave layout (that score goes from 2 parts to 6), which
+    makes a structural merge fragile for no gain. Feature rows concatenate
+    cleanly, and measures are renumbered 1..N across the whole piece.
+
+    `page_offsets[i]` is the PDF page that segment i starts on. The caller
+    determines it, since only it has the PDF to check against.
+    """
+    if len(scores) == 1:
+        return extract(scores[0])
+
+    rows, layout, pages = [], [], []
+    for score, offset in zip(scores, page_offsets):
+        part = extract(score)
+        base = len(rows)
+
+        for row in part["measures"]:
+            renumbered = dict(row)
+            renumbered["m"] = base + (row["m"] - part["score"]["first_measure"]) + 1
+            rows.append(renumbered)
+
+        shift = base + 1 - part["score"]["first_measure"]
+        for entry in part["score"]["system_layout"]:
+            layout.append({
+                "page": entry["page"] + offset,
+                "system": entry["system"],
+                "start_measure": entry["start_measure"] + shift,
+                "end_measure": entry["end_measure"] + shift,
+            })
+        for entry in part["score"]["page_ranges"]:
+            pages.append({
+                "page": entry["page"] + offset,
+                "start_measure": entry["start_measure"] + shift,
+                "end_measure": entry["end_measure"] + shift,
+            })
+
+    if len(rows) > MAX_MEASURES:
+        raise TooLongError(
+            f"{len(rows)} measures exceeds the {MAX_MEASURES}-measure limit for a single plan"
+        )
+
+    # Segments can meet mid-page; fold those page entries together.
+    collapsed = []
+    for entry in pages:
+        if collapsed and collapsed[-1]["page"] == entry["page"]:
+            collapsed[-1]["end_measure"] = entry["end_measure"]
+        else:
+            collapsed.append(dict(entry))
+
+    head = extract(scores[0])["score"]
+    head.update({
+        "first_measure": 1,
+        "last_measure": len(rows),
+        "total_measures": len(rows),
+        "has_pickup": False,
+        "page_ranges": collapsed,
+        "system_layout": layout,
+        "segments": len(scores),
+    })
+    return {"score": head, "measures": _derived(rows)}
 
 
 def to_prompt_table(features: dict) -> str:

@@ -8,6 +8,8 @@ export type PageImage = {
   start_measure: number;
   end_measure: number;
   path: string;
+  /** False when the system couldn't be isolated and the whole page is shown. */
+  cropped?: boolean;
 };
 
 type Props = {
@@ -17,7 +19,7 @@ type Props = {
 };
 
 /**
- * Shows the source PDF pages covering a measure range.
+ * Shows the staff systems covering a measure range, cropped from the PDF.
  *
  * This is the real engraving rather than a re-render of the OMR output —
  * Audiveris drops fingerings, most dynamics and, on dense scores, notes, so a
@@ -88,14 +90,13 @@ export default function ScorePages({ pages, fromMeasure, toMeasure }: Props) {
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
             src={url}
-            alt={`Page ${relevant[i].page + 1}, measures ${relevant[i].start_measure}–${relevant[i].end_measure}`}
+            alt={`Measures ${relevant[i].start_measure}–${relevant[i].end_measure}`}
             className="w-full"
             loading="lazy"
           />
           <figcaption className="bg-zinc-100 px-3 py-1.5 text-xs text-zinc-600">
-            Page {relevant[i].page + 1} · measures {relevant[i].start_measure}–
-            {relevant[i].end_measure}
-            {relevant.length > 1 ? "" : ` · this section is mm. ${fromMeasure}–${toMeasure}`}
+            mm. {relevant[i].start_measure}–{relevant[i].end_measure}
+            {relevant[i].cropped === false && ` · full page ${relevant[i].page + 1}`}
           </figcaption>
         </figure>
       ))}
