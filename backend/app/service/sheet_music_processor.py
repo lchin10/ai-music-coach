@@ -1,4 +1,5 @@
 import os
+import re
 import uuid
 import shutil
 import tempfile
@@ -10,12 +11,39 @@ from music21 import converter
 
 from supabase import create_client
 
-# 150 keeps a page legible on a laptop at roughly 200-400 KB.
-PAGE_IMAGE_DPI = 150
-
 from app import schema
 from app.graph import features as feat
 from app.graph.build import build, postgres_checkpointer
+from app.service import page_crops
+
+# 150 keeps a page legible on a laptop at roughly 200-400 KB.
+PAGE_IMAGE_DPI = 150
+
+
+def _movement_order(path: str) -> tuple:
+    """Sort Audiveris exports by movement number, not lexically.
+
+    `.mvt10` must not sort before `.mvt2`.
+    """
+    match = re.search(r"\.mvt(\d+)\.", os.path.basename(path), re.I)
+    return (0, int(match.group(1))) if match else (1, 0)
+
+
+def _page_offsets(scores: list, page_count: int) -> list:
+    """Which PDF page each Audiveris segment starts on.
+
+    A segment either continues on the page the previous one ended on (the
+    usual case, since Audiveris splits mid-flow) or starts the next page.
+    Guessing wrong would show the wrong page entirely, so the choice is made
+    by counting: a page cannot hold fewer ink bands than it has systems.
+    """
+    offsets, cursor = [0], 0
+    for previous in scores[:-1]:
+        layout = feat.system_layout(previous, 1)
+        pages_used = max(entry["page"] for entry in layout) if layout else 0
+        cursor += pages_used
+        offsets.append(min(cursor, max(0, page_count - 1)))
+    return offsets
 
 
 class SheetMusicProcessor:
@@ -55,14 +83,22 @@ class SheetMusicProcessor:
         except Exception as e:
             print(f"[processor] ERROR running audiveris: {e}")
             return None
+        # Audiveris writes one file per "movement" and invents movement breaks
+        # on single-movement pieces. Returning only the first silently planned
+        # half the piece, so take them all, in order.
+        found = []
         for root, _, files in os.walk(outdir):
-            for f in files:
+            for f in sorted(files):
                 if f.lower().endswith((".musicxml", ".xml", ".mxl")):
-                    found = os.path.join(root, f)
-                    print(f"[processor] MusicXML found: {found}")
-                    return found
-        print(f"[processor] ERROR: no MusicXML output found in {outdir}")
-        return None
+                    found.append(os.path.join(root, f))
+
+        if not found:
+            print(f"[processor] ERROR: no MusicXML output found in {outdir}")
+            return []
+
+        found.sort(key=_movement_order)
+        print(f"[processor] MusicXML found: {[os.path.basename(f) for f in found]}")
+        return found
 
     # ----------------------------------------------------------------------
     # Supabase helpers
@@ -151,34 +187,46 @@ class SheetMusicProcessor:
         if not (self.supabase and piece_id):
             return
 
-        ranges = features["score"].get("page_ranges") or []
-        if not ranges:
+        layout = features["score"].get("system_layout") or []
+        if not layout:
             return
+
+        # Group systems by page for the cropper.
+        by_page = []
+        for entry in layout:
+            if by_page and by_page[-1]["page"] == entry["page"]:
+                by_page[-1]["systems"].append(entry)
+            else:
+                by_page.append({"page": entry["page"], "systems": [entry]})
 
         manifest = []
         try:
-            document = fitz.open(stream=pdf_bytes, filetype="pdf")
             folder = user_id or "anonymous"
+            crops = page_crops.crop_systems(pdf_bytes, by_page)
 
-            for entry in ranges:
-                index = entry["page"]
-                if index >= document.page_count:
-                    print(f"[processor] page {index} beyond the PDF — skipping")
-                    continue
-
-                png = document[index].get_pixmap(dpi=PAGE_IMAGE_DPI).tobytes("png")
-                key = f"{folder}/{piece_id}-p{index}.png"
+            for i, crop in enumerate(crops):
+                key = f"{folder}/{piece_id}-s{i}.png"
                 self.supabase.storage.from_("pieces").upload(
-                    key, png, {"content-type": "image/png", "upsert": "true"}
+                    key, crop["png"], {"content-type": "image/png", "upsert": "true"}
                 )
-                manifest.append({**entry, "path": key, "bytes": len(png)})
+                manifest.append({
+                    "page": crop["page"],
+                    "start_measure": crop["start_measure"],
+                    "end_measure": crop["end_measure"],
+                    "cropped": crop["cropped"],
+                    "path": key,
+                    "bytes": len(crop["png"]),
+                })
 
             self.supabase.table("pieces").update({"page_images": manifest}).eq(
                 "id", piece_id
             ).execute()
+            whole = sum(1 for m in manifest if not m["cropped"])
             print(
-                f"[processor] Stored {len(manifest)} page images "
-                f"({sum(m['bytes'] for m in manifest) // 1024} KB total)"
+                f"[processor] Stored {len(manifest)} score images "
+                f"({sum(m['bytes'] for m in manifest) // 1024} KB"
+                + (f", {whole} uncropped full pages" if whole else ", all cropped to systems")
+                + ")"
             )
         except Exception as e:
             # Notation is a display nicety; the plan is the product.
@@ -355,20 +403,29 @@ class SheetMusicProcessor:
             os.makedirs(outdir, exist_ok=True)
 
             self._stage(piece_id, "converting")
-            musicxml_path = self._run_audiveris(pdf_path, outdir)
-            if not musicxml_path:
+            musicxml_paths = self._run_audiveris(pdf_path, outdir)
+            if not musicxml_paths:
                 self._fail(piece_id, "Conversion to MusicXML failed")
                 return
 
-            print("[processor] Parsing MusicXML with music21...")
-            score = converter.parse(musicxml_path)
-            if not list(score.parts):
+            print(f"[processor] Parsing {len(musicxml_paths)} MusicXML file(s) with music21...")
+            scores = [converter.parse(p) for p in musicxml_paths]
+            scores = [s for s in scores if list(s.parts)]
+            if not scores:
                 self._fail(piece_id, "No parts found in MusicXML")
                 return
+            score = scores[0]
 
             self._stage(piece_id, "analyzing")
             try:
-                features = feat.extract(score)
+                page_count = fitz.open(stream=pdf_bytes, filetype="pdf").page_count
+                offsets = _page_offsets(scores, page_count)
+                if len(scores) > 1:
+                    print(
+                        f"[processor] Audiveris split this into {len(scores)} movements; "
+                        f"merging (page offsets {offsets})"
+                    )
+                features = feat.extract_multi(scores, offsets)
             except feat.TooLongError as e:
                 # The guard that actually protects the bill: reject before the
                 # fan-out, which is where the cost lives.
@@ -384,7 +441,7 @@ class SheetMusicProcessor:
             # Keep the MusicXML — the frontend renders notation straight from
             # it. Without this the temp dir takes it and there is nothing to
             # draw the bars a drill refers to.
-            self._store_musicxml(piece_id, user_id, musicxml_path, features)
+            self._store_musicxml(piece_id, user_id, musicxml_paths[0], features)
             self._store_page_images(piece_id, user_id, pdf_bytes, features)
 
             plan = self._run_graph(piece_id, user_id, features)
