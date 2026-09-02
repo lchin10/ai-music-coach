@@ -13,7 +13,7 @@ from supabase import create_client
 
 from app import schema
 from app.graph import features as feat
-from app.graph.build import build, postgres_checkpointer
+from app.graph.build import build
 from app.service import page_crops
 
 # 150 keeps a page legible on a laptop at roughly 200-400 KB.
@@ -321,7 +321,7 @@ class SheetMusicProcessor:
     # Persistence
     # ----------------------------------------------------------------------
 
-    def _persist(self, piece_id: str, plan: dict):
+    def _persist(self, piece_id: str, plan: dict, quality: str = "full", reason: str = ""):
         """Sections belong to the PIECE, not the plan version.
 
         Plan revisions (Phase 3) rewrite plan_steps only. If sections were ever
@@ -371,12 +371,40 @@ class SheetMusicProcessor:
             print("[processor] ERROR: supabase client not initialised — check NEXT_PUBLIC_SUPABASE_URL and SUPABASE_SERVICE_ROLE_KEY in .env.local")
             return
 
+        # A retry reprocesses from scratch, so clear anything a previous run
+        # left behind or the piece accumulates duplicate sections. Safe while
+        # nothing references section_id yet; once practice progress exists,
+        # this needs to preserve sections rather than replace them.
+        try:
+            existing = (
+                self.supabase.table("sections").select("id").eq("piece_id", piece_id).execute()
+            ).data or []
+            plans = (
+                self.supabase.table("practice_plans").select("id").eq("piece_id", piece_id).execute()
+            ).data or []
+            for plan_row in plans:
+                self.supabase.table("plan_steps").delete().eq("plan_id", plan_row["id"]).execute()
+            if plans:
+                self.supabase.table("practice_plans").delete().eq("piece_id", piece_id).execute()
+            if existing:
+                self.supabase.table("sections").delete().eq("piece_id", piece_id).execute()
+                print(f"[processor] cleared {len(existing)} sections from a previous run")
+        except Exception as e:
+            print(f"[processor] could not clear previous plan: {e}")
+
         print(f"[processor] Inserting {len(sections_db)} sections, {len(steps_db)} steps...")
         self.supabase.table("sections").insert(sections_db).execute()
         self.supabase.table("practice_plans").insert({"id": plan_id, "piece_id": piece_id, "version": 1}).execute()
         self.supabase.table("plan_steps").insert(steps_db).execute()
-        self.supabase.table("pieces").update({"status": "ready", "processing_stage": "done"}).eq("id", piece_id).execute()
-        print("[processor] Done — piece marked ready")
+        self.supabase.table("pieces").update({
+            "status": "ready",
+            "processing_stage": "done",
+            "plan_quality": quality,
+            # Surfaced in the UI next to a Retry button. A generic plan that
+            # looks like the real thing is worse than one that admits it.
+            "failure_reason": reason or None,
+        }).eq("id", piece_id).execute()
+        print(f"[processor] Done — piece marked ready ({quality})")
 
     # ----------------------------------------------------------------------
     # Entry point
@@ -445,19 +473,27 @@ class SheetMusicProcessor:
             self._store_page_images(piece_id, user_id, pdf_bytes, features)
 
             plan = self._run_graph(piece_id, user_id, features)
+            quality, reason = "full", ""
             if plan is None:
                 print("[processor] graph failed — falling back to deterministic plan")
                 plan = self._fallback_plan(score)
+                quality = "fallback"
+                reason = "The full AI analysis didn't complete, so this is a basic plan built from measure counts."
 
-            print(f"[processor] Plan has {len(plan['sections'])} sections")
-            self._persist(piece_id, plan)
+            print(f"[processor] Plan has {len(plan['sections'])} sections ({quality})")
+            self._persist(piece_id, plan, quality, reason)
 
         except Exception as e:
             print(f"[processor] EXCEPTION: {e}")
             import traceback; traceback.print_exc()
             if score is not None:
                 try:
-                    self._persist(piece_id, self._fallback_plan(score))
+                    self._persist(
+                        piece_id,
+                        self._fallback_plan(score),
+                        "fallback",
+                        f"Processing hit an error, so this is a basic plan: {e}",
+                    )
                     return
                 except Exception as inner:
                     print(f"[processor] fallback also failed: {inner}")
@@ -483,13 +519,7 @@ class SheetMusicProcessor:
         config = {"configurable": {"thread_id": piece_id}, "recursion_limit": 50}
 
         try:
-            saver = postgres_checkpointer()
-            if saver is None:
-                return self._as_plan(build().invoke(initial, config))
-
-            with saver as checkpointer:
-                checkpointer.setup()
-                return self._as_plan(build(checkpointer).invoke(initial, config))
+            return self._as_plan(build().invoke(initial, config))
         except Exception as e:
             print(f"[processor] graph error: {e}")
             import traceback; traceback.print_exc()
