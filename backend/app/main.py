@@ -2,7 +2,7 @@ import os
 from fastapi import FastAPI
 from fastapi.middleware.cors import CORSMiddleware
 
-from app.routers import sheet_music
+from app.routers import practice, sheet_music
 
 # Allow whichever frontend origins are configured. Locally, .env.local sets
 # both FRONTEND_URL (prod) and FRONTEND_DEV_URL (http://localhost:3000); in
@@ -27,6 +27,7 @@ app.add_middleware(
 )
 
 app.include_router(sheet_music.router)
+app.include_router(practice.router)
 
 
 @app.get("/")

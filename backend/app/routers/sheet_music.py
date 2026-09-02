@@ -99,6 +99,27 @@ async def retry_piece(
     if not row or not row.get("file_path"):
         return {"error": "piece not found"}
 
+    # Reprocessing recreates sections with fresh UUIDs, and every mastery row
+    # and ladder key hangs off section_id (see migrations 001 and 007). Once
+    # there is real practice history, silently orphaning it is worse than
+    # leaving a mediocre plan in place.
+    sections = (
+        service.supabase.table("sections").select("id").eq("piece_id", piece_id).execute()
+    ).data or []
+    if sections:
+        practised = (
+            service.supabase.table("step_attempts")
+            .select("id", count="exact")
+            .in_("section_id", [s["id"] for s in sections])
+            .limit(1)
+            .execute()
+        )
+        if practised.count:
+            return {
+                "error": "This piece has practice progress — "
+                         "retrying would reset it."
+            }
+
     pdf_bytes = service.supabase.storage.from_("pieces").download(row["file_path"])
 
     service.supabase.table("pieces").update(

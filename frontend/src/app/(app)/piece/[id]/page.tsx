@@ -47,6 +47,19 @@ type PlanStep = {
   success_criterion: string | null;
 };
 
+type Mastery = { section_id: string; mastery: number; reached_stage: string | null };
+
+const STAGE_LABEL: Record<string, string> = {
+  notes: "notes learned",
+  thread: "threaded",
+  rhythm: "rhythm in",
+  technique: "technique in",
+  transition: "transitions in",
+  pair: "paired up",
+  section: "section done",
+  tempo: "at tempo",
+};
+
 function DifficultyBadge({ difficulty }: { difficulty: number }) {
   const label =
     difficulty < 25 ? "Easy" : difficulty < 50 ? "Moderate" : difficulty < 75 ? "Hard" : "Expert";
@@ -88,6 +101,8 @@ export default function PiecePage() {
   const [pageLoading, setPageLoading] = useState(true);
   const [expanded, setExpanded] = useState<string | null>(null);
   const [retrying, setRetrying] = useState(false);
+  const [retryError, setRetryError] = useState<string | null>(null);
+  const [mastery, setMastery] = useState<Record<string, Mastery>>({});
 
   const pageImages = piece?.page_images ?? [];
   const isFallback = piece?.plan_quality === "fallback";
@@ -98,12 +113,17 @@ export default function PiecePage() {
     const body = new FormData();
     body.append("piece_id", piece.id);
     const res = await fetch(`${BACKEND_URL}/sheet_music/retry`, { method: "POST", body });
-    if (res.ok) {
-      // Processing runs in the background; the confirmation page polls for it.
-      router.push("/upload-confirmation");
-    } else {
+    // Reprocessing rebuilds sections with new ids, so the backend refuses once
+    // there's practice progress hanging off them — that comes back as a 200
+    // with an error body, not a failed request.
+    const data = res.ok ? await res.json() : { error: "Retry failed." };
+    if (data.error) {
+      setRetryError(data.error);
       setRetrying(false);
+      return;
     }
+    // Processing runs in the background; the confirmation page polls for it.
+    router.push("/upload-confirmation");
   };
 
   useEffect(() => {
@@ -125,6 +145,16 @@ export default function PiecePage() {
         setSections(sectionsRes.data);
         // Open the first section so the page isn't a wall of closed rows.
         if (sectionsRes.data.length > 0) setExpanded(sectionsRes.data[0].id);
+
+        const { data: masteryData } = await supabase
+          .from("section_mastery")
+          .select("section_id, mastery, reached_stage")
+          .in(
+            "section_id",
+            sectionsRes.data.map((s) => s.id)
+          );
+        if (masteryData)
+          setMastery(Object.fromEntries(masteryData.map((m) => [m.section_id, m])));
       }
 
       if (planRes.data) {
@@ -205,6 +235,7 @@ export default function PiecePage() {
                 {retrying ? "Retrying…" : "Retry analysis"}
               </button>
             </div>
+            {retryError && <p className="mt-3 text-sm text-amber-200/80">{retryError}</p>}
           </div>
         )}
 
@@ -242,6 +273,21 @@ export default function PiecePage() {
                         Measures {section.start_measure}–{section.end_measure} ·{" "}
                         {sectionSteps.length} step{sectionSteps.length !== 1 ? "s" : ""}
                       </p>
+                      {mastery[section.id] && (
+                        <div className="mt-2 flex items-center gap-2">
+                          <div className="h-1 w-32 overflow-hidden rounded-full bg-zinc-800">
+                            <div
+                              className="h-full rounded-full bg-indigo-400"
+                              style={{ width: `${mastery[section.id].mastery}%` }}
+                            />
+                          </div>
+                          <span className="text-xs text-zinc-500">
+                            {mastery[section.id].mastery}%
+                            {mastery[section.id].reached_stage &&
+                              ` · ${STAGE_LABEL[mastery[section.id].reached_stage!] ?? ""}`}
+                          </span>
+                        </div>
+                      )}
                     </div>
                     <DifficultyBadge difficulty={section.difficulty} />
                   </button>
