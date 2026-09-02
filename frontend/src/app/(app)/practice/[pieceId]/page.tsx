@@ -35,6 +35,27 @@ type Action = {
   why: string;
 };
 
+/** One rung in the rail: label and status only. The full step (instructions
+ *  and all) is fetched from /practice/step when a rung is actually opened. */
+type Rung = {
+  key: string;
+  label: string;
+  title: string;
+  /** Position in the ladder's true order, which interleaves transitions and
+   *  pairs even though the rail groups them by stage. */
+  order: number;
+  done: boolean;
+  visited: boolean;
+};
+
+type StageRow = {
+  stage: string;
+  total: number;
+  done: number;
+  complete: boolean;
+  steps: Rung[];
+};
+
 type SectionRow = {
   id: string;
   title: string;
@@ -44,15 +65,13 @@ type SectionRow = {
   reached_stage: string | null;
   complete: boolean;
   locked: boolean;
+  stages: StageRow[];
 };
-
-type StageRow = { stage: string; total: number; done: number; complete: boolean };
 
 type State = {
   session_id: string | null;
   action: Action;
   sections: SectionRow[];
-  stages: StageRow[];
 };
 
 const STAGE_LABEL: Record<string, string> = {
@@ -92,9 +111,21 @@ export default function PracticePage() {
   const [busy, setBusy] = useState<string | null>(null);
   const [error, setError] = useState<string | null>(null);
 
-  // Viewing an earlier step via Back. Any feedback clears it.
-  const [override, setOverride] = useState<Step | null>(null);
+  // Every step shown this session, and where in it we're looking; null means
+  // the live one from the server. A cursor rather than a single "previous
+  // step" is what lets Back keep walking backwards — the old version always
+  // read history[length - 2], so a second click went nowhere.
   const history = useRef<Step[]>([]);
+  const [cursor, setCursor] = useState<number | null>(null);
+  // Which stage is expanded in the rail, and what the live stage was when the
+  // choice was made — so the rail follows along once you move on, without a
+  // setState-in-effect.
+  const [stagePick, setStagePick] = useState<{
+    section: string;
+    stage: string | null;
+    whenStage: string | null;
+  } | null>(null);
+  const [sectionPick, setSectionPick] = useState<string | null>(null);
 
   const [bpm, setBpm] = useState(60);
   const [beats, setBeats] = useState(4);
@@ -107,7 +138,7 @@ export default function PracticePage() {
   const sessionSeconds = useRef(Date.now());
 
   const userId = session?.user?.id;
-  const step = override ?? state?.action.step ?? null;
+  const step = cursor !== null ? history.current[cursor] ?? null : state?.action.step ?? null;
   const usedMetronome = useRef(false);
 
   // ---- metronome lifecycle -------------------------------------------------
@@ -151,10 +182,18 @@ export default function PracticePage() {
 
   // ---- session -------------------------------------------------------------
 
+  /** Show a step and record that it was visited. Consecutive duplicates are
+   *  dropped so Back never lands on the step you're already looking at. */
+  const remember = (next: Step) => {
+    const last = history.current[history.current.length - 1];
+    if (last?.key !== next.key) history.current = [...history.current, next];
+    setCursor(null);
+  };
+
   const apply = useCallback((next: State) => {
     setState(next);
-    setOverride(null);
-    if (next.action.step) history.current = [...history.current, next.action.step].slice(-20);
+    if (next.action.step) remember(next.action.step);
+    else setCursor(null);
   }, []);
 
   useEffect(() => {
@@ -262,9 +301,76 @@ export default function PracticePage() {
   const skip = () =>
     post("skip_stage", { ...base(), stage: step!.stage }, "skip");
 
-  const goBack = () => {
-    const previous = history.current[history.current.length - 2];
-    if (previous) setOverride(previous);
+  // Every rung of the plan, in the order the ladder serves them. "Back a step"
+  // walks THIS, not the order you happened to visit things in — going from
+  // mm. 7-8 to mm. 3-4 and pressing back should land on mm. 1-2, not bounce
+  // you to mm. 7-8.
+  //
+  // Sorted by `order` rather than taken as laid out, because the rail groups
+  // transitions and pairs into separate stages while the ladder interleaves
+  // them one merge level at a time.
+  // Sections already arrive in playing order, so sorting each one's rungs and
+  // concatenating gives the whole piece in ladder order.
+  const planOrder = (state?.sections ?? []).flatMap((s) =>
+    s.stages
+      .flatMap((st) => st.steps)
+      .sort((a, b) => a.order - b.order)
+      .map((r) => r.key)
+  );
+  const planIndex = step ? planOrder.indexOf(step.key) : -1;
+  // -1 covers a remediation drill, which isn't part of the plan — there's no
+  // "previous rung" to step back to from one.
+  const canGoBack = planIndex > 0;
+  const goBack = () => openRung(planOrder[planIndex - 1]);
+
+  /** Which stage is expanded for a section.
+   *
+   *  Defaults to the stage you're on, and follows along as you advance — but a
+   *  deliberate pick wins until the live stage moves past it, which is why the
+   *  pick records the stage it was made against instead of being reset by an
+   *  effect.
+   */
+  const openStage = (sectionId: string) => {
+    const live = sectionId === state?.action.section_id ? step?.stage ?? null : null;
+    if (stagePick?.section === sectionId && stagePick.whenStage === live) {
+      return stagePick.stage;
+    }
+    return live;
+  };
+
+  /** One stage open at a time: picking another closes the last. */
+  const pickStage = (sectionId: string, stage: string) => {
+    const live = sectionId === state?.action.section_id ? step?.stage ?? null : null;
+    setStagePick({
+      section: sectionId,
+      stage: openStage(sectionId) === stage ? null : stage,
+      whenStage: live,
+    });
+  };
+
+  /** Jump to a rung from the rail. Only visited rungs are offered, so this is
+   *  always revisiting, never skipping ahead. */
+  const openRung = async (key: string) => {
+    const known = history.current.findIndex((s) => s.key === key);
+    if (known !== -1) {
+      setCursor(known);
+      return;
+    }
+    setBusy("rung");
+    try {
+      const res = await fetch(
+        `${BACKEND_URL}/practice/step?user_id=${userId}&piece_id=${pieceId}` +
+          `&step_key=${encodeURIComponent(key)}`
+      );
+      const data = await res.json();
+      if (!data.step) throw new Error("missing");
+      history.current = [...history.current, data.step];
+      setCursor(history.current.length - 1);
+    } catch {
+      setError("Couldn't open that step.");
+    } finally {
+      setBusy(null);
+    }
   };
 
   // ---- render --------------------------------------------------------------
@@ -339,58 +445,128 @@ export default function PracticePage() {
           >
             ✕ hide
           </button>
-            <div className="flex flex-col gap-1.5">
-              {state?.sections.map((s, i) => {
-                const current = s.id === action?.section_id;
-                return (
-                  <div
-                    key={s.id}
-                    className={`rounded-xl px-3 py-2 text-sm ${
-                      current ? "bg-indigo-500/15 text-white" : "text-zinc-400"
+          <div className="flex flex-col gap-1">
+            {state?.sections.map((section, i) => {
+              const current = section.id === action?.section_id;
+              const open = current || sectionPick === section.id;
+              return (
+                <div key={section.id}>
+                  {/* The current section always stays open; any one other
+                      section can be pinned open alongside it. */}
+                  <button
+                    onClick={() =>
+                      !current &&
+                      !section.locked &&
+                      setSectionPick(sectionPick === section.id ? null : section.id)
+                    }
+                    disabled={section.locked}
+                    className={`w-full rounded-xl px-2.5 py-2 text-left text-sm transition ${
+                      current
+                        ? "bg-indigo-500/15 text-white"
+                        : section.locked
+                        ? "text-zinc-600"
+                        : "text-zinc-400 hover:bg-white/5 cursor-pointer"
                     }`}
-                    title={s.locked ? "Unlocks once the section before it is paired up" : undefined}
+                    title={
+                      section.locked
+                        ? "Unlocks once the section before it is paired up"
+                        : undefined
+                    }
                   >
                     <div className="flex items-center gap-2">
                       <span className="w-4 shrink-0 text-xs">
-                        {s.complete ? "✓" : current ? "▶" : s.locked ? "🔒" : ""}
+                        {section.complete ? "✓" : current ? "▶" : section.locked ? "🔒" : ""}
                       </span>
                       <span className="truncate">
-                        {i + 1}. {s.title}
+                        {i + 1}. {section.title}
                       </span>
                     </div>
-                    <div className="mt-1.5 ml-6 h-1 overflow-hidden rounded-full bg-zinc-800">
+                    <div className="ml-6 mt-1.5 h-1 overflow-hidden rounded-full bg-zinc-800">
                       <div
                         className="h-full rounded-full bg-indigo-400"
-                        style={{ width: `${s.mastery}%` }}
+                        style={{ width: `${section.mastery}%` }}
                       />
                     </div>
-                  </div>
-                );
-              })}
-            </div>
+                  </button>
 
-            {(state?.stages.length ?? 0) > 0 && (
-              <div className="flex flex-col gap-1 border-t border-white/10 pt-4">
-                {state!.stages.map((s) => {
-                  const current = s.stage === step?.stage;
-                  return (
-                    <div
-                      key={s.stage}
-                      className={`flex items-center gap-2 rounded-lg px-2 py-1 text-xs ${
-                        current ? "bg-white/5 text-white" : s.complete ? "text-zinc-500" : "text-zinc-600"
-                      }`}
-                    >
-                      <span className="w-3">{s.complete ? "✓" : current ? "▶" : "○"}</span>
-                      <span className="flex-1 truncate">{STAGE_LABEL[s.stage] ?? s.stage}</span>
-                      <span className="tabular-nums">
-                        {s.done}/{s.total}
-                      </span>
+                  {/* This section's ladder, directly underneath it. */}
+                  {open && (
+                    <div className="ml-3 mt-1 flex flex-col gap-0.5 border-l border-white/10 pl-2">
+                      {section.stages.map((row) => {
+                        const onStage = current && row.stage === step?.stage;
+                        const expanded = openStage(section.id) === row.stage;
+                        return (
+                          <div key={row.stage}>
+                            <button
+                              onClick={() => pickStage(section.id, row.stage)}
+                              className={`flex w-full items-center gap-1.5 rounded-lg px-1.5 py-1 text-xs transition hover:bg-white/5 cursor-pointer ${
+                                onStage
+                                  ? "text-white"
+                                  : row.complete
+                                  ? "text-zinc-500"
+                                  : "text-zinc-600"
+                              }`}
+                            >
+                              <span
+                                className={`w-2.5 shrink-0 transition-transform ${
+                                  expanded ? "rotate-90" : ""
+                                }`}
+                                aria-hidden
+                              >
+                                ▸
+                              </span>
+                              <span className="flex-1 truncate text-left">
+                                {STAGE_LABEL[row.stage] ?? row.stage}
+                              </span>
+                              <span className="tabular-nums">
+                                {row.done}/{row.total}
+                              </span>
+                            </button>
+
+                            {/* The individual rungs. Only ones already
+                                attempted are reachable — anything else would
+                                be skipping ahead rather than revisiting. */}
+                            {expanded && (
+                              <div className="ml-4 flex flex-col">
+                                {row.steps.map((rung) => {
+                                  const here = rung.key === step?.key;
+                                  return (
+                                    <button
+                                      key={rung.key}
+                                      onClick={() => rung.visited && openRung(rung.key)}
+                                      disabled={!rung.visited || !!busy}
+                                      title={
+                                        rung.visited
+                                          ? rung.title
+                                          : "You haven't reached this one yet"
+                                      }
+                                      className={`flex items-center gap-1.5 rounded px-1.5 py-0.5 text-left text-[11px] transition ${
+                                        here
+                                          ? "bg-white/10 text-white"
+                                          : rung.visited
+                                          ? "text-zinc-400 hover:bg-white/5 cursor-pointer"
+                                          : "text-zinc-700"
+                                      }`}
+                                    >
+                                      <span className="w-2.5 shrink-0">
+                                        {rung.done ? "✓" : here ? "▸" : ""}
+                                      </span>
+                                      <span className="truncate">{rung.label}</span>
+                                    </button>
+                                  );
+                                })}
+                              </div>
+                            )}
+                          </div>
+                        );
+                      })}
                     </div>
-                  );
-                })}
-              </div>
-            )}
-          </aside>
+                  )}
+                </div>
+              );
+            })}
+          </div>
+        </aside>
 
         {/* The step — takes whatever the rail leaves. */}
         <section className="flex min-w-0 flex-1 flex-col gap-5 rounded-[2rem] border border-white/10 bg-zinc-900/80 p-6">
@@ -529,7 +705,7 @@ export default function PracticePage() {
                         Shaky
                       </button>
                     </div>
-                    {history.current.length > 1 && (
+                    {canGoBack && (
                       <button
                         onClick={goBack}
                         className="text-xs text-zinc-500 hover:text-zinc-300 cursor-pointer"

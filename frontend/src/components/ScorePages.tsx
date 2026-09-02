@@ -25,8 +25,15 @@ type Props = {
  * Audiveris drops fingerings, most dynamics and, on dense scores, notes, so a
  * re-render shows music that doesn't match the page the user is playing from.
  */
+/** A page and the signed URL that belongs to it — never two loose arrays. */
+type Signed = PageImage & { url: string };
+
 export default function ScorePages({ pages, fromMeasure, toMeasure }: Props) {
-  const [urls, setUrls] = useState<string[] | null>(null);
+  // Each image carries its own URL. Holding the URLs in a separate array and
+  // matching by index crashed: `pages` is derived from props and updates
+  // immediately, while the URLs are state and lag a render, so on a step
+  // change the shorter new list was indexed with the older, longer one.
+  const [signed, setSigned] = useState<Signed[] | null>(null);
   const [error, setError] = useState<string | null>(null);
 
   // A page is relevant when its measures overlap the requested range.
@@ -37,9 +44,16 @@ export default function ScorePages({ pages, fromMeasure, toMeasure }: Props) {
   const key = relevant.map((p) => p.path).join("|");
 
   useEffect(() => {
-    if (relevant.length === 0) return;
+    if (relevant.length === 0) {
+      setSigned([]);
+      return;
+    }
 
     let cancelled = false;
+    // Drop the previous step's images rather than showing them under the new
+    // caption while these sign.
+    setSigned(null);
+    setError(null);
 
     (async () => {
       const { data, error: signError } = await supabase.storage
@@ -54,7 +68,17 @@ export default function ScorePages({ pages, fromMeasure, toMeasure }: Props) {
         setError(signError?.message ?? "Could not load the score");
         return;
       }
-      setUrls(data.map((d) => d.signedUrl).filter(Boolean) as string[]);
+
+      // Pair by path, which the API echoes back — order and length can't
+      // drift the way index matching did.
+      const byPath = new Map(
+        data.filter((d) => d.path && d.signedUrl).map((d) => [d.path as string, d.signedUrl])
+      );
+      setSigned(
+        relevant
+          .filter((p) => byPath.has(p.path))
+          .map((p) => ({ ...p, url: byPath.get(p.path)! }))
+      );
     })();
 
     return () => {
@@ -82,21 +106,21 @@ export default function ScorePages({ pages, fromMeasure, toMeasure }: Props) {
 
   return (
     <div className="flex flex-col gap-3">
-      {!urls && <div className="h-64 animate-pulse rounded-2xl bg-zinc-800/50" />}
-      {urls?.map((url, i) => (
-        <figure key={url} className="overflow-hidden rounded-2xl bg-white">
+      {!signed && <div className="h-64 animate-pulse rounded-2xl bg-zinc-800/50" />}
+      {signed?.map((page) => (
+        <figure key={page.path} className="overflow-hidden rounded-2xl bg-white">
           {/* Sheet music is engraved black-on-white; a white surface is what
               it's meant to be read on, and inverting it hurts legibility. */}
           {/* eslint-disable-next-line @next/next/no-img-element */}
           <img
-            src={url}
-            alt={`Measures ${relevant[i].start_measure}–${relevant[i].end_measure}`}
+            src={page.url}
+            alt={`Measures ${page.start_measure}–${page.end_measure}`}
             className="w-full"
             loading="lazy"
           />
           <figcaption className="bg-zinc-100 px-3 py-1.5 text-xs text-zinc-600">
-            mm. {relevant[i].start_measure}–{relevant[i].end_measure}
-            {relevant[i].cropped === false && ` · full page ${relevant[i].page + 1}`}
+            mm. {page.start_measure}–{page.end_measure}
+            {page.cropped === false && ` · full page ${page.page + 1}`}
           </figcaption>
         </figure>
       ))}

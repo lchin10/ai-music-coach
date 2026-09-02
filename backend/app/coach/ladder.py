@@ -367,18 +367,50 @@ def build(section: dict, authored_steps: list = None, level: str = "intermediate
     return steps
 
 
-def stage_progress(steps: list, nailed_keys: set) -> list:
-    """Per-stage completion for the session UI's rail.
+def rung_label(step: dict) -> str:
+    """What a single rung is called in the sidebar.
 
-    A 16-bar section is ~30 rungs; the student should see 8 stages, not 30
-    rows. Returns one dict per stage the ladder actually emitted.
+    Every tempo rung covers the whole section, so labelling them by bar range
+    would print the same thing three times — they're distinguished by speed.
     """
+    if step["stage"] == "tempo" and step.get("target_tempo"):
+        return f"{step['target_tempo']} bpm"
+    return _bars(step["focus_start_measure"], step["focus_end_measure"])
+
+
+def stage_progress(steps: list, nailed_keys: set, visited_keys: set = ()) -> list:
+    """Per-stage completion, plus the individual rungs underneath.
+
+    A 16-bar section is ~30 rungs, so the rail leads with 8 stages — but a
+    student who wants to redo the notes of mm. 7-8 needs to be able to reach
+    that one rung, so each stage carries its own steps and the UI expands them
+    on demand. Only rungs already attempted are navigable; the rest would be
+    skipping ahead.
+    """
+    # The rail groups by stage, but the ladder INTERLEAVES transitions and
+    # pairs — drill the seam, then play the merged chunk, one merge level at a
+    # time. `order` carries each rung's true position so "back a step" reverses
+    # the order the scheduler actually serves, not the order they're displayed.
+    order = {s["key"]: i for i, s in enumerate(steps)}
+
     out = []
     for stage in STAGES:
-        keys = [s["key"] for s in steps if s["stage"] == stage]
-        if not keys:
+        group = [s for s in steps if s["stage"] == stage]
+        if not group:
             continue
-        done = sum(1 for k in keys if k in nailed_keys)
-        out.append({"stage": stage, "total": len(keys), "done": done,
-                    "complete": done == len(keys)})
+        done = sum(1 for s in group if s["key"] in nailed_keys)
+        out.append({
+            "stage": stage,
+            "total": len(group),
+            "done": done,
+            "complete": done == len(group),
+            "steps": [{
+                "key": s["key"],
+                "label": rung_label(s),
+                "title": s["title"],
+                "order": order[s["key"]],
+                "done": s["key"] in nailed_keys,
+                "visited": s["key"] in visited_keys,
+            } for s in group],
+        })
     return out
