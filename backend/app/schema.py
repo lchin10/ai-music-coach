@@ -24,6 +24,20 @@ EXPECTED = {
         "target_tempo", "drill_type", "is_checkpoint", "unlock_requirement",
         # migration 001
         "focus_start_measure", "focus_end_measure", "success_criterion", "source",
+        "stage", "metronome",  # migration 007, remediation drills only
+    ],
+    # migration 007 — the practice runtime
+    "practice_sessions": [
+        "id", "user_id", "piece_id", "started_at", "ended_at", "total_seconds",
+    ],
+    "step_attempts": [
+        "id", "session_id", "user_id", "section_id", "step_key", "stage",
+        "created_at", "seconds", "tempo_reached", "metronome_on",
+        "self_report", "skipped", "notes",
+    ],
+    "section_mastery": [
+        "user_id", "section_id", "mastery", "streak", "times_reviewed",
+        "reached_stage", "last_practiced_at",
     ],
 }
 
