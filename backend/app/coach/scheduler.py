@@ -144,6 +144,15 @@ def _integration_step(a: dict, b: dict) -> dict:
         "metronome": ladder.METRONOME_OPTIONAL,
         "target_tempo": floor,
         "title": f"Join “{a.get('title')}” into “{b.get('title')}”",
+        "instructions": [
+            {"lead": f"Play mm. {start}–{end} as one",
+             "detail": "You know both halves. This is the first time they have "
+                       "to run into each other."},
+            {"lead": f"The crossing at m. {a['end_measure']} into "
+                     f"m. {b['start_measure']} is the whole exercise",
+             "detail": "If it breaks, drill just those two bars rather than "
+                       "restarting the passage."},
+        ],
         "description": (
             f"You know both halves. Now play mm. {start}–{end} as one — the "
             f"crossing at m. {a['end_measure']} into m. {b['start_measure']} "

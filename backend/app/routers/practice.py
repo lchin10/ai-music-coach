@@ -51,6 +51,9 @@ def _remediation_steps(rows: list) -> list:
         "target_tempo": row.get("target_tempo") or None,
         "metronome": row.get("metronome") or ladder.METRONOME_OPTIONAL,
         "title": row["title"],
+        # plan_steps stores flat text, so the structure is rebuilt on read.
+        # A stored breakdown is one point; the title already leads it.
+        "instructions": [{"lead": "", "detail": row.get("description") or ""}],
         "description": row.get("description") or "",
         "source": "remediation",
     } for row in rows]

@@ -24,8 +24,27 @@ export default function Home() {
               Upload sheet music, generate a tailored practice plan, and track every session with progress memory built for real musicians.
             </p>
 
-            {!session && (
-              <div className="flex flex-wrap gap-4">
+            <div className="flex flex-wrap gap-4">
+              {session ? (
+                <>
+                  {/* "Your pieces" rather than "Start practising" — this goes
+                      to the library, and a session starts from a piece. */}
+                  <button
+                    type="button"
+                    onClick={() => router.push("/profile")}
+                    className="inline-flex items-center justify-center rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-400 cursor-pointer"
+                  >
+                    Your pieces →
+                  </button>
+                  <button
+                    type="button"
+                    onClick={() => router.push("/upload")}
+                    className="inline-flex items-center justify-center rounded-2xl bg-zinc-800 px-6 py-3 text-sm font-semibold text-white transition hover:bg-zinc-700 cursor-pointer"
+                  >
+                    Upload a piece
+                  </button>
+                </>
+              ) : (
                 <button
                   type="button"
                   onClick={() => router.push("/signup")}
@@ -33,8 +52,8 @@ export default function Home() {
                 >
                   Get started
                 </button>
-              </div>
-            )}
+              )}
+            </div>
           </div>
         </section>
 

@@ -5,6 +5,8 @@ import useSession from "@/lib/userSession";
 import { useEffect, useState } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
+import ScorePages, { type PageImage } from "@/components/ScorePages";
+import { displayComposer, displayTitle, uploadedOn } from "@/lib/pieceName";
 
 type Profile = {
 	name: string;
@@ -15,12 +17,19 @@ type Profile = {
 type Piece = {
 	id: string;
 	title: string;
+	work_title: string | null;
+	composer: string | null;
 	created_at: string;
 	status: string;
 	file_path: string;
 	musicxml_path: string | null;
 	failure_reason: string | null;
+	page_images: PageImage[] | null;
 };
+
+/** The opening system — first crop by measure, not by array order. */
+const firstLine = (piece: Piece): PageImage | undefined =>
+	[...(piece.page_images ?? [])].sort((a, b) => a.start_measure - b.start_measure)[0];
 
 export default function ProfilePage() {
 	const { session, loading } = useSession();
@@ -48,7 +57,7 @@ export default function ProfilePage() {
 			setProfile(res.profile);
 
       // Pieces
-      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, created_at, status, file_path, musicxml_path, failure_reason").eq("user_id", session.user.id);
+      const { data: piecesData, error: piecesError } = await supabase.from("pieces").select("id, title, work_title, composer, created_at, status, file_path, musicxml_path, failure_reason, page_images").eq("user_id", session.user.id);
       if (piecesError) {
         return;
       }
@@ -259,10 +268,13 @@ export default function ProfilePage() {
 											if (piece.status === "ready") router.push(`/piece/${piece.id}`);
 										}}
 									>
-										<div className="flex flex-col gap-2 sm:flex-row sm:items-center sm:justify-between">
-											<div>
-												<p className="font-semibold text-white">{piece.title}</p>
-												<p className="text-sm text-zinc-400">Uploaded: {piece.created_at}</p>
+										<div className="flex flex-col gap-2 sm:flex-row sm:items-start sm:justify-between">
+											<div className="min-w-0">
+												<p className="font-semibold text-white">{displayTitle(piece)}</p>
+												{displayComposer(piece) && (
+													<p className="text-sm text-zinc-300">{displayComposer(piece)}</p>
+												)}
+												<p className="mt-1 text-sm text-zinc-500">Uploaded: {uploadedOn(piece.created_at)}</p>
 											</div>
 											<div className="relative flex items-center gap-2" onClick={(e) => e.stopPropagation()}>
 												{piece.status === "failed" && piece.failure_reason && (
@@ -294,6 +306,17 @@ export default function ProfilePage() {
 												)}
 											</div>
 										</div>
+
+										{/* The opening bars — the fastest way to recognise a piece. */}
+										{firstLine(piece) && (
+											<div className="mt-4">
+												<ScorePages
+													pages={piece.page_images!}
+													fromMeasure={firstLine(piece)!.start_measure}
+													toMeasure={firstLine(piece)!.start_measure}
+												/>
+											</div>
+										)}
 									</div>
 								))}
 							</>

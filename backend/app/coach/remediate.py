@@ -29,7 +29,8 @@ def _slower(tempo, floor):
     return floor if not tempo else max(TEMPO_MIN, round(tempo * TEMPO_DROP))
 
 
-def _drill(section, stage, a, b, tempo, metronome, title, description):
+def _drill(section, stage, a, b, tempo, metronome, title, lead, detail=""):
+    """One instruction point, same shape the ladder emits (see ladder._step)."""
     a, b = _clamp(a, b, section)
     return {
         "section_id": section["id"],
@@ -39,7 +40,8 @@ def _drill(section, stage, a, b, tempo, metronome, title, description):
         "target_tempo": tempo,
         "metronome": metronome,
         "title": title,
-        "description": description,
+        "instructions": [{"lead": lead, "detail": detail.strip()}],
+        "description": f"{lead}. {detail}".strip(),
         "source": "remediation",
     }
 
@@ -52,58 +54,63 @@ def narrow(step: dict, section: dict) -> list:
     b = step["focus_end_measure"]
     stage = step.get("stage")
     mid = a + (b - a) // 2
+    slower = max(TEMPO_MIN, round((step.get("target_tempo") or floor) * TEMPO_DROP))
 
     if stage == "notes":
         return [_drill(
             section, "notes", a, a, None, ladder.METRONOME_OFF,
             f"One bar, one hand — m. {a}",
-            f"Right hand alone through m. {a}, then left hand alone. Don't put "
-            f"them together until each one is automatic.",
+            f"Right hand alone through m. {a}, then left hand alone",
+            "Don't put them together until each one runs without you thinking "
+            "about it.",
         )]
 
     if stage == "thread":
         return [_drill(
             section, "notes", a, mid, None, ladder.METRONOME_OFF,
             f"Back to the notes — mm. {a}–{mid}",
+            f"Hands separate again through mm. {a}–{mid}",
             "Threading isn't sticking because the notes aren't quite there "
-            "yet. Take the first half hands separate again, then rejoin.",
+            "yet. Rebuild the first half, then rejoin.",
         )]
 
     if stage == "rhythm":
-        slower = max(TEMPO_MIN, round((step.get("target_tempo") or floor) * TEMPO_DROP))
         return [_drill(
             section, "rhythm", a, b, slower, ladder.METRONOME_REQUIRED,
             f"Same bars, {slower} bpm",
-            f"Drop to {slower} bpm. If the hands still don't line up, count "
-            f"the subdivision out loud while you play.",
+            f"Drop the metronome to {slower} bpm",
+            "If the hands still don't line up, count the subdivision out loud "
+            "while you play — that usually finds the beat you're rushing.",
         )]
 
     if stage in ("technique", "integration"):
         return [_drill(
             section, "technique", a, a, floor, ladder.METRONOME_OPTIONAL,
             f"Just m. {a}",
-            "One bar, hands together, as slow as it takes. Repeat the motion "
-            "until it stops feeling like a reach.",
+            f"One bar — m. {a}, hands together",
+            "As slow as it takes. Repeat the motion until it stops feeling "
+            "like a reach.",
         )]
 
     if stage == "pair":
+        landing = min(b, mid + 1)
         return [_drill(
-            section, "transition", mid, min(b, mid + 1), floor,
+            section, "transition", mid, landing, floor,
             ladder.METRONOME_OPTIONAL,
-            f"Only the seam — m. {mid} into m. {min(b, mid + 1)}",
-            "Forget the rest of the passage. Play the last beat of "
-            f"m. {mid} into the downbeat of m. {min(b, mid + 1)}, over and over.",
+            f"Only the seam — m. {mid} into m. {landing}",
+            f"Play only the crossing into m. {landing}",
+            "Forget the rest of the passage. The last beat of "
+            f"m. {mid} into that downbeat, over and over.",
         )]
 
     if stage == "transition":
         # A transition is ALREADY just the seam, so narrowing the range again
         # would hand back the same drill. Go at the landing instead.
-        slower = max(TEMPO_MIN, round((step.get("target_tempo") or floor) * TEMPO_DROP))
         return [_drill(
             section, "technique", b, b, slower, ladder.METRONOME_OPTIONAL,
             f"Land on m. {b}",
-            f"Start from a dead stop and play only the downbeat of m. {b}, "
-            f"both hands, until the shape is automatic. Then add the beat "
+            f"From a dead stop, play only the downbeat of m. {b}",
+            "Both hands, until the shape is automatic. Then add the beat "
             f"before it back in at {slower} bpm.",
         )]
 
@@ -111,24 +118,26 @@ def narrow(step: dict, section: dict) -> list:
         return [_drill(
             section, "pair", a, mid, floor, ladder.METRONOME_OPTIONAL,
             f"Half the section — mm. {a}–{mid}",
+            f"Just mm. {a}–{mid} for now",
             "The whole thing is too much to hold at once. Rebuild it from the "
-            "first half, then add the second.",
+            "first half, then add the second back on.",
         )]
 
     if stage == "tempo":
-        slower = max(TEMPO_MIN, round((step.get("target_tempo") or floor) * TEMPO_DROP))
         return [_drill(
             section, "tempo", a, b, slower, ladder.METRONOME_REQUIRED,
             f"Back a rung — {slower} bpm",
-            f"You've gone up too early. Sit at {slower} bpm until it's clean "
-            f"three times running, then move.",
+            f"Come back down to {slower} bpm",
+            "You've gone up too early. Sit here until it's clean three times "
+            "running, then move.",
         )]
 
     # Unknown stage: halve the range and slow down. Never return nothing.
     return [_drill(
         section, stage or "technique", a, mid, _slower(step.get("target_tempo"), floor),
         ladder.METRONOME_OPTIONAL, f"Narrower — mm. {a}–{mid}",
-        "Half the range, slower.",
+        f"Half the range — mm. {a}–{mid} — and slower",
+        "Smaller and slower is nearly always the way out.",
     )]
 
 
@@ -200,10 +209,16 @@ def diagnose(step: dict, section: dict, attempts: list, profile: dict) -> list:
                 ladder.METRONOME_REQUIRED if d.get("use_metronome")
                 else ladder.METRONOME_OPTIONAL,
                 d["title"],
+                d["title"],
                 d["description"],
             ))
         if diagnosis:
-            out[0]["description"] = f"{diagnosis}\n\n{out[0]['description']}"
+            # The diagnosis leads: it's why the drills that follow are these
+            # drills, and it's the part worth reading first.
+            out[0]["instructions"].insert(
+                0, {"lead": "What's going wrong", "detail": diagnosis}
+            )
+            out[0]["description"] = f"{diagnosis} {out[0]['description']}"
         return out
     except Exception as e:
         print(f"[coach] remediation call failed ({e}); narrowing instead")

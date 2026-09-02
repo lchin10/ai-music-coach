@@ -7,12 +7,17 @@ import { supabase } from "@/lib/supabaseClient";
 const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 import useSession from "@/lib/userSession";
 import ScorePages, { type PageImage } from "@/components/ScorePages";
+import { displayComposer, displayTitle } from "@/lib/pieceName";
+import FullScore from "@/components/FullScore";
 
 type Piece = {
   id: string;
   title: string;
+  work_title: string | null;
+  composer: string | null;
   status: string;
   created_at: string;
+  file_path: string | null;
   page_images: PageImage[] | null;
   plan_quality: string | null;
   failure_reason: string | null;
@@ -106,6 +111,12 @@ export default function PiecePage() {
 
   const pageImages = piece?.page_images ?? [];
   const isFallback = piece?.plan_quality === "fallback";
+  // The opening system — the first crop by measure, not by array order.
+  const firstLine = [...pageImages].sort((a, b) => a.start_measure - b.start_measure)[0];
+  const started = Object.keys(mastery).length > 0;
+  const overallDifficulty = sections.length
+    ? Math.round(sections.reduce((sum, s) => sum + s.difficulty, 0) / sections.length)
+    : 0;
 
   const retry = async () => {
     if (!piece) return;
@@ -133,7 +144,9 @@ export default function PiecePage() {
       const [pieceRes, sectionsRes, planRes] = await Promise.all([
         supabase
           .from("pieces")
-          .select("id, title, status, created_at, page_images, plan_quality, failure_reason")
+          .select(
+            "id, title, work_title, composer, status, created_at, file_path, page_images, plan_quality, failure_reason"
+          )
           .eq("id", id)
           .single(),
         supabase.from("sections").select("*").eq("piece_id", id).order("start_measure"),
@@ -143,8 +156,6 @@ export default function PiecePage() {
       if (pieceRes.data) setPiece(pieceRes.data);
       if (sectionsRes.data) {
         setSections(sectionsRes.data);
-        // Open the first section so the page isn't a wall of closed rows.
-        if (sectionsRes.data.length > 0) setExpanded(sectionsRes.data[0].id);
 
         const { data: masteryData } = await supabase
           .from("section_mastery")
@@ -193,24 +204,44 @@ export default function PiecePage() {
           >
             ← Back to profile
           </button>
-          <div className="flex flex-wrap items-end justify-between gap-4">
-            <div>
-              <h1 className="text-3xl font-semibold text-white leading-tight">{piece.title}</h1>
-              <p className="mt-1 text-sm text-zinc-400">
+
+          <div className="flex flex-wrap items-start justify-between gap-4">
+            <div className="min-w-0">
+              <h1 className="text-3xl font-semibold leading-tight text-white">
+                {displayTitle(piece)}
+              </h1>
+              {displayComposer(piece) && (
+                <p className="mt-1 text-lg text-zinc-400">{displayComposer(piece)}</p>
+              )}
+              <p className="mt-2 text-sm text-zinc-500">
                 {sections.length} section{sections.length !== 1 ? "s" : ""} · {steps.length}{" "}
                 practice step{steps.length !== 1 ? "s" : ""}
               </p>
             </div>
-            {sections.length > 0 && (
-              <button
-                onClick={() => router.push(`/practice/${piece.id}`)}
-                className="rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-400 cursor-pointer"
-              >
-                Start practising →
-              </button>
-            )}
+            {/* The piece's overall difficulty, on the same scale the sections
+                use, so the two read against each other. */}
+            {sections.length > 0 && <DifficultyBadge difficulty={overallDifficulty} />}
           </div>
-          {pageImages.length === 0 && (
+
+          {sections.length > 0 && (
+            <button
+              onClick={() => router.push(`/practice/${piece.id}`)}
+              className="mt-5 rounded-2xl bg-indigo-500 px-6 py-3 text-sm font-semibold text-white transition hover:bg-indigo-400 cursor-pointer"
+            >
+              {started ? "Continue practising →" : "Start practising →"}
+            </button>
+          )}
+
+          {/* The opening bars, so it's obvious at a glance which piece this is. */}
+          {firstLine ? (
+            <div className="mt-5">
+              <ScorePages
+                pages={pageImages}
+                fromMeasure={firstLine.start_measure}
+                toMeasure={firstLine.start_measure}
+              />
+            </div>
+          ) : (
             <p className="mt-3 text-xs text-zinc-500">
               Notation isn&apos;t available for this piece — re-upload it to see the score.
             </p>
@@ -371,6 +402,10 @@ export default function PiecePage() {
             })}
           </div>
         )}
+
+        {/* The whole piece, for orientation — the crops only ever
+            show the bars of one drill. */}
+        <FullScore filePath={piece.file_path} />
       </div>
     </main>
   );
