@@ -1,0 +1,9 @@
+# Test output and failure logs (see .claude/hooks/check.py)
+test-logs/
+
+# Signed-in Playwright session for the e2e test user — holds a live token
+frontend/e2e/.auth/
+
+# Personal Claude Code permissions
+.claude/settings.local.json
+__pycache__/

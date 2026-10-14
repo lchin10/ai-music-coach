@@ -4,8 +4,7 @@ import { useState, useCallback } from "react";
 import { useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
 import useSession from "@/lib/userSession";
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+import { backendFetch } from "@/lib/backend";
 
 const REJECTION_MESSAGES: Record<string, string> = {
 	too_many_pages: "That looks like a whole book. Please upload a single piece.",
@@ -67,7 +66,7 @@ export default function UploadPage() {
 			// Check if the PDF contains sheet music
 			const formData = new FormData();
 			formData.append("pdf_file", selectedFile);
-			const detectorResp = await fetch(`${BACKEND_URL}/sheet_music/detector`, {
+			const detectorResp = await backendFetch("/sheet_music/detector", {
 				method: "POST",
 				body: formData,
 			});
@@ -106,8 +105,7 @@ export default function UploadPage() {
 			const procForm = new FormData();
 			procForm.append("pdf_file", selectedFile);
 			if (pieceId) procForm.append("piece_id", pieceId);
-			if (session?.user.id) procForm.append("user_id", session.user.id);
-			fetch(`${BACKEND_URL}/sheet_music/process`, {
+			backendFetch("/sheet_music/process", {
 				method: "POST",
 				body: procForm,
 			}).catch((err) => console.error("Failed to start processing", err));
@@ -190,7 +188,7 @@ export default function UploadPage() {
 
 				<div className="text-center text-sm text-zinc-500">
 					<p>Supported format: PDF only</p>
-					<p className="mt-1">Maximum file size: 50MB</p>
+					<p className="mt-1">Maximum file size: 25MB</p>
 				</div>
 			</div>
 		</main>

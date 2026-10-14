@@ -8,8 +8,8 @@ import ScorePages, { type PageImage } from "@/components/ScorePages";
 import { Metronome } from "@/lib/metronome";
 import { displayComposer, displayTitle } from "@/lib/pieceName";
 import FullScore from "@/components/FullScore";
+import { BACKEND_URL, backendFetch } from "@/lib/backend";
 
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
 
 type Instruction = { lead: string; detail: string };
 
@@ -137,7 +137,6 @@ export default function PracticePage() {
   const stepStarted = useRef(Date.now());
   const sessionSeconds = useRef(Date.now());
 
-  const userId = session?.user?.id;
   const step = cursor !== null ? history.current[cursor] ?? null : state?.action.step ?? null;
   const usedMetronome = useRef(false);
 
@@ -213,10 +212,10 @@ export default function PracticePage() {
         setFilePath(data.file_path ?? null);
       }
 
-      const res = await fetch(`${BACKEND_URL}/practice/session/start`, {
+      const res = await backendFetch("/practice/session/start", {
         method: "POST",
         headers: { "Content-Type": "application/json" },
-        body: JSON.stringify({ user_id: session.user.id, piece_id: pieceId }),
+        body: JSON.stringify({ piece_id: pieceId }),
       });
       if (cancelled) return;
       if (!res.ok) {
@@ -231,19 +230,30 @@ export default function PracticePage() {
     };
   }, [session, pieceId, apply]);
 
-  // Leaving the page closes the session. A normal fetch is killed on unload,
-  // so this has to be a beacon.
+  // The latest token, readable synchronously while the page unloads. Tokens
+  // refresh hourly, so the effect below can't just close over the first one.
+  const accessToken = useRef<string | undefined>(undefined);
+  useEffect(() => {
+    accessToken.current = session?.access_token;
+  }, [session]);
+
+  // Leaving the page closes the session. A normal fetch is killed on unload
+  // and a beacon can't carry the auth header, so this is a keepalive fetch.
+  // It has to be sent synchronously: no awaiting a fresh session here.
   useEffect(() => {
     const close = () => {
       const id = state?.session_id;
       if (!id) return;
       const seconds = Math.round((Date.now() - sessionSeconds.current) / 1000);
-      navigator.sendBeacon(
-        `${BACKEND_URL}/practice/session/end`,
-        new Blob([JSON.stringify({ session_id: id, total_seconds: seconds })], {
-          type: "application/json",
-        })
-      );
+      fetch(`${BACKEND_URL}/practice/session/end`, {
+        method: "POST",
+        keepalive: true,
+        headers: {
+          "Content-Type": "application/json",
+          Authorization: `Bearer ${accessToken.current}`,
+        },
+        body: JSON.stringify({ session_id: id, total_seconds: seconds }),
+      }).catch(() => {});
     };
     window.addEventListener("pagehide", close);
     return () => {
@@ -255,7 +265,7 @@ export default function PracticePage() {
   const post = async (path: string, body: object, label: string) => {
     setBusy(label);
     try {
-      const res = await fetch(`${BACKEND_URL}/practice/${path}`, {
+      const res = await backendFetch(`/practice/${path}`, {
         method: "POST",
         headers: { "Content-Type": "application/json" },
         body: JSON.stringify(body),
@@ -272,7 +282,6 @@ export default function PracticePage() {
 
   const base = () => ({
     session_id: state?.session_id,
-    user_id: userId,
     piece_id: pieceId,
     section_id: step?.section_id,
   });
@@ -358,9 +367,8 @@ export default function PracticePage() {
     }
     setBusy("rung");
     try {
-      const res = await fetch(
-        `${BACKEND_URL}/practice/step?user_id=${userId}&piece_id=${pieceId}` +
-          `&step_key=${encodeURIComponent(key)}`
+      const res = await backendFetch(
+        `/practice/step?piece_id=${pieceId}&step_key=${encodeURIComponent(key)}`
       );
       const data = await res.json();
       if (!data.step) throw new Error("missing");

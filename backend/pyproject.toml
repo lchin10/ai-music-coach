@@ -22,5 +22,11 @@ dependencies = [
     "langgraph",
 ]
 
+[project.optional-dependencies]
+dev = ["pytest", "httpx"]  # httpx backs FastAPI's TestClient
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+
 [tool.setuptools]
 packages = ["app", "app.graph"]

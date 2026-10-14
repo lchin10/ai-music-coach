@@ -3,8 +3,7 @@
 import { useEffect, useState } from "react";
 import { useParams, useRouter } from "next/navigation";
 import { supabase } from "@/lib/supabaseClient";
-
-const BACKEND_URL = process.env.NEXT_PUBLIC_BACKEND_URL ?? "http://localhost:8000";
+import { backendFetch } from "@/lib/backend";
 import useSession from "@/lib/userSession";
 import ScorePages, { type PageImage } from "@/components/ScorePages";
 import { displayComposer, displayTitle } from "@/lib/pieceName";
@@ -123,7 +122,7 @@ export default function PiecePage() {
     setRetrying(true);
     const body = new FormData();
     body.append("piece_id", piece.id);
-    const res = await fetch(`${BACKEND_URL}/sheet_music/retry`, { method: "POST", body });
+    const res = await backendFetch("/sheet_music/retry", { method: "POST", body });
     // Reprocessing rebuilds sections with new ids, so the backend refuses once
     // there's practice progress hanging off them — that comes back as a 200
     // with an error body, not a failed request.

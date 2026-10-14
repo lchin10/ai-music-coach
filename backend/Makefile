@@ -1,4 +1,4 @@
-.PHONY: install dev run lint format clean
+.PHONY: install dev run test lint format clean
 
 PYTHON=python
 
@@ -10,6 +10,9 @@ dev:
 
 run:
 	$(PYTHON) -m uvicorn app.main:app --reload --env-file .env.local
+
+test:
+	$(PYTHON) -m pytest -q
 
 lint:
 	ruff .
