@@ -66,16 +66,23 @@ Two other things keep the schema honest:
 
 ## Endpoints
 
+**Every endpoint except `GET /` requires `Authorization: Bearer <Supabase access token>`.**
+The backend uses the service-role key, which bypasses RLS, so `app/auth.py` is the
+access control: `current_user` verifies the token (401 if missing or invalid) and
+`own_piece` / `own_session` check that every id in the request belongs to that user
+(404 otherwise, so other users' ids are indistinguishable from missing ones). No
+endpoint accepts a `user_id`; identity comes from the token only. The frontend sends
+the token through `backendFetch` in `frontend/src/lib/backend.ts`.
+
 ### Score processing
 
 | Method | Path | Description |
 |---|---|---|
-| `GET` | `/` | Health check |
+| `GET` | `/` | Health check (no auth) |
 | `GET` | `/sheet_music/schema` | Reports any expected table/column the database is missing |
 | `POST` | `/sheet_music/detector` | Detects whether a PDF contains sheet music (OpenCV scoring) |
-| `POST` | `/sheet_music/process` | Starts background processing: PDF → MusicXML → parse → AI plan → Supabase |
+| `POST` | `/sheet_music/process` | Starts background processing of the caller's piece: PDF → MusicXML → parse → AI plan → Supabase. 413 over 25 MB |
 | `POST` | `/sheet_music/retry` | Re-runs processing from the stored PDF. Refuses if the piece has practice progress |
-| `POST` | `/sheet_music/create_section` | **Dev only** — inserts a test section + practice plan for a given `piece_id` |
 
 ### Practice runtime
 
@@ -91,7 +98,11 @@ advance instantly.
 | `POST` | `/practice/attempt` | Records an attempt, updates mastery, returns the next action |
 | `POST` | `/practice/skip_stage` | "I already know this" — clears a whole stage without inflating mastery |
 | `POST` | `/practice/struggling` | Breaks the current rung down (deterministic first tap, agent on the second) |
-| `POST` | `/practice/session/end` | Closes the session and banks the elapsed time |
+| `POST` | `/practice/session/end` | Closes the session and banks the elapsed time. Idempotent: the first end wins |
+
+Request bodies are validated at the boundary: `self_report` is `nailed` or `shaky`,
+and `seconds`, `tempo_reached` and `total_seconds` are bounded, so a bad client
+gets a 422 instead of corrupting mastery.
 
 ## Layout
 
@@ -106,6 +117,8 @@ advance instantly.
 | `app/graph/` | The planning pipeline: `features`, `prompts`, `nodes`, `validate`, `build` |
 | `app/coach/` | The practice runtime: `ladder`, `scheduler`, `remediate` |
 | `app/schema.py` | Expected tables and columns, for the drift check |
+| `app/auth.py` | Token verification and ownership checks for every endpoint |
+| `app/db.py` | The shared service-role Supabase client |
 
 ## Processing pipeline
 
@@ -168,12 +181,26 @@ agent.
 
 ```bash
 cd backend
-python tests/test_graph.py       # validator, reducer and serialisation invariants
-python tests/test_graph_flow.py  # the full graph against a stubbed model
-python tests/test_ladder.py      # ladder, scheduler, mastery, decay, remediation
+python -m pip install -e .[dev]   # pytest + httpx, once
+python -m pytest                  # or: make test
 ```
 
-All three run offline and spend no tokens.
+Everything runs offline and spends no tokens.
+
+| File | Covers |
+|---|---|
+| `tests/test_auth.py` | Every endpoint: missing/bad token → 401, another user's piece/session/section → 404, malformed ids, token cache expiry |
+| `tests/test_practice_api.py` | The practice runtime over HTTP: reporting, input validation, session end idempotency, skip, struggling (with the model mocked, failing, and absent) |
+| `tests/test_sheet_music_api.py` | Process, retry and detector: size limits, ownership, retry refusal |
+| `tests/test_ladder.py` | Ladder, scheduler, mastery, decay, remediation |
+| `tests/test_graph.py`, `tests/test_graph_flow.py` | Planning graph invariants, and the full graph against a stubbed model |
+
+`tests/conftest.py` runs the real FastAPI app over an in-memory fake of Supabase
+(DB, auth and storage), so endpoint tests exercise the actual routing, validation
+and auth code. Only the external boundaries are faked.
+
+The frontend's Playwright suite (`frontend/e2e/`) also drives this backend end to
+end, on port 8100.
 
 ## External dependencies
 
@@ -203,7 +230,9 @@ Notes:
 
 ```bash
 make install   # pip install -e .
+make dev       # pip install -e .[dev] (adds pytest, httpx)
 make run       # uvicorn with --reload, reads .env.local
+make test      # python -m pytest -q
 make lint      # ruff .
 make format    # black .
 make clean     # remove build artifacts

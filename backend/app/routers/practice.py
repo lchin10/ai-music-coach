@@ -5,27 +5,24 @@ other endpoint is one round of queries plus arithmetic — tapping "Nailed it"
 has to advance instantly, so nothing on that path is allowed to be slow.
 """
 
-import os
 import uuid
 from datetime import datetime, timezone
-from functools import lru_cache
-from typing import Optional
+from typing import Literal, Optional
 
-from fastapi import APIRouter
-from pydantic import BaseModel
-from supabase import create_client
+from fastapi import APIRouter, Depends, HTTPException
+from pydantic import BaseModel, Field
 
+from app.auth import current_user, own_piece, own_session
 from app.coach import ladder, remediate, scheduler
+from app.db import client as db
 
 router = APIRouter(prefix="/practice", tags=["practice"])
 
-
-@lru_cache(maxsize=1)
-def db():
-    """Service-role client, made once. Practice endpoints are chatty."""
-    url = os.getenv("NEXT_PUBLIC_SUPABASE_URL")
-    key = os.getenv("SUPABASE_SERVICE_ROLE_KEY") or os.getenv("NEXT_PUBLIC_SUPABASE_ANON_KEY")
-    return create_client(url, key) if (url and key) else None
+# Upper bounds on client-reported numbers, so one bad request can't poison
+# mastery or session totals.
+MAX_STEP_SECONDS = 4 * 60 * 60
+MAX_SESSION_SECONDS = 24 * 60 * 60
+MAX_BPM = 400
 
 
 def _now():
@@ -141,33 +138,47 @@ def state(world: dict, session_id: Optional[str] = None) -> dict:
 # --------------------------------------------------------------------------
 
 
+def _section(world: dict, section_id: str) -> dict:
+    """A section of the loaded piece, or 404 — so an attempt can't be filed
+    against a section from some other piece."""
+    section = next((s for s in world["sections"] if s["id"] == section_id), None)
+    if not section:
+        raise HTTPException(404, "Section not found")
+    return section
+
+
 class StartBody(BaseModel):
-    user_id: str
     piece_id: str
 
 
 @router.post("/session/start")
-async def start(body: StartBody):
+async def start(body: StartBody, user_id: str = Depends(current_user)):
+    own_piece(user_id, body.piece_id)
     session_id = str(uuid.uuid4())
     db().table("practice_sessions").insert({
-        "id": session_id, "user_id": body.user_id, "piece_id": body.piece_id,
+        "id": session_id, "user_id": user_id, "piece_id": body.piece_id,
     }).execute()
-    return state(load(body.user_id, body.piece_id), session_id)
+    return state(load(user_id, body.piece_id), session_id)
 
 
 @router.get("/next")
-async def next_step(user_id: str, piece_id: str, session_id: str = None):
+async def next_step(piece_id: str, session_id: str = None,
+                    user_id: str = Depends(current_user)):
+    own_piece(user_id, piece_id)
+    if session_id is not None:
+        own_session(user_id, session_id, piece_id)
     return state(load(user_id, piece_id), session_id)
 
 
 @router.get("/step")
-async def one_step(user_id: str, piece_id: str, step_key: str):
+async def one_step(piece_id: str, step_key: str, user_id: str = Depends(current_user)):
     """The full rung behind a sidebar entry.
 
     The rail only carries labels and status; the instructions are fetched when
     a student actually jumps to a rung, which is rare compared to tapping
     through the ladder in order.
     """
+    own_piece(user_id, piece_id)
     world = load(user_id, piece_id)
     for steps in list(world["ladders"].values()) + [world["remediation"]]:
         for step in steps:
@@ -178,16 +189,15 @@ async def one_step(user_id: str, piece_id: str, step_key: str):
 
 class AttemptBody(BaseModel):
     session_id: str
-    user_id: str
     piece_id: str
     section_id: str
     step_key: str
     stage: str
-    self_report: str
-    tempo_reached: Optional[int] = None
-    target_tempo: Optional[int] = None
+    self_report: Literal["nailed", "shaky"]
+    tempo_reached: Optional[int] = Field(None, ge=1, le=MAX_BPM)
+    target_tempo: Optional[int] = Field(None, ge=0, le=MAX_BPM)
     metronome_on: bool = False
-    seconds: int = 0
+    seconds: int = Field(0, ge=0, le=MAX_STEP_SECONDS)
 
 
 def _record(world, user_id, section_id, rows):
@@ -232,12 +242,15 @@ def _record(world, user_id, section_id, rows):
 
 
 @router.post("/attempt")
-async def attempt(body: AttemptBody):
-    world = load(body.user_id, body.piece_id)
+async def attempt(body: AttemptBody, user_id: str = Depends(current_user)):
+    own_piece(user_id, body.piece_id)
+    own_session(user_id, body.session_id, body.piece_id)
+    world = load(user_id, body.piece_id)
+    _section(world, body.section_id)
     row = {
         "id": str(uuid.uuid4()),
         "session_id": body.session_id,
-        "user_id": body.user_id,
+        "user_id": user_id,
         "section_id": body.section_id,
         "step_key": body.step_key,
         "stage": body.stage,
@@ -247,7 +260,7 @@ async def attempt(body: AttemptBody):
         "self_report": body.self_report,
     }
     # Carried alongside the row for scoring, but not a column.
-    updated = _record(world, body.user_id, body.section_id,
+    updated = _record(world, user_id, body.section_id,
                       [dict(row, _target_tempo=body.target_tempo)])
 
     result = state(world, body.session_id)
@@ -258,27 +271,29 @@ async def attempt(body: AttemptBody):
 
 class SkipBody(BaseModel):
     session_id: str
-    user_id: str
     piece_id: str
     section_id: str
     stage: str
 
 
 @router.post("/skip_stage")
-async def skip_stage(body: SkipBody):
+async def skip_stage(body: SkipBody, user_id: str = Depends(current_user)):
     """"I already know this" — clear a whole stage without inflating mastery.
 
     Without it, a player who can already read the piece has to tap through
     every two-bar chunk before the app lets them do anything useful.
     """
-    world = load(body.user_id, body.piece_id)
+    own_piece(user_id, body.piece_id)
+    own_session(user_id, body.session_id, body.piece_id)
+    world = load(user_id, body.piece_id)
+    _section(world, body.section_id)
     steps = world["ladders"].get(body.section_id, [])
     nailed = {a["step_key"] for a in world["attempts"] if a.get("self_report") == "nailed"}
 
     rows = [{
         "id": str(uuid.uuid4()),
         "session_id": body.session_id,
-        "user_id": body.user_id,
+        "user_id": user_id,
         "section_id": body.section_id,
         "step_key": step["key"],
         "stage": step["stage"],
@@ -287,13 +302,12 @@ async def skip_stage(body: SkipBody):
     } for step in steps if step["stage"] == body.stage and step["key"] not in nailed]
 
     if rows:
-        _record(world, body.user_id, body.section_id, rows)
+        _record(world, user_id, body.section_id, rows)
     return state(world, body.session_id)
 
 
 class StruggleBody(BaseModel):
     session_id: str
-    user_id: str
     piece_id: str
     section_id: str
     step_key: str
@@ -301,17 +315,17 @@ class StruggleBody(BaseModel):
 
 
 @router.post("/struggling")
-async def struggling(body: StruggleBody):
+async def struggling(body: StruggleBody, user_id: str = Depends(current_user)):
     """Break the current step down.
 
     First tap narrows deterministically — instant and free. Only a second tap
     on the same step pays for a diagnosis.
     """
+    own_piece(user_id, body.piece_id)
+    own_session(user_id, body.session_id, body.piece_id)
     client = db()
-    world = load(body.user_id, body.piece_id)
-    section = next((s for s in world["sections"] if s["id"] == body.section_id), None)
-    if not section:
-        return {"error": "section not found"}
+    world = load(user_id, body.piece_id)
+    section = _section(world, body.section_id)
 
     steps = world["ladders"].get(body.section_id, []) + world["remediation"]
     step = next((s for s in steps if s["key"] == body.step_key), None)
@@ -324,7 +338,7 @@ async def struggling(body: StruggleBody):
     client.table("step_attempts").insert({
         "id": str(uuid.uuid4()),
         "session_id": body.session_id,
-        "user_id": body.user_id,
+        "user_id": user_id,
         "section_id": body.section_id,
         "step_key": body.step_key,
         "stage": body.stage,
@@ -334,7 +348,7 @@ async def struggling(body: StruggleBody):
     if prior:
         profile = (
             client.table("profiles").select("piano_level, years_experience")
-            .eq("id", body.user_id).maybe_single().execute()
+            .eq("id", user_id).maybe_single().execute()
         )
         drills = remediate.diagnose(
             step, section,
@@ -380,18 +394,20 @@ async def struggling(body: StruggleBody):
     } for i, d in enumerate(drills)]
     client.table("plan_steps").insert(rows).execute()
 
-    return state(load(body.user_id, body.piece_id), body.session_id)
+    return state(load(user_id, body.piece_id), body.session_id)
 
 
 class EndBody(BaseModel):
     session_id: str
-    total_seconds: int = 0
+    total_seconds: int = Field(0, ge=0, le=MAX_SESSION_SECONDS)
 
 
 @router.post("/session/end")
-async def end(body: EndBody):
+async def end(body: EndBody, user_id: str = Depends(current_user)):
+    own_session(user_id, body.session_id)
+    # First end wins: a retried or duplicate close must not move ended_at.
     db().table("practice_sessions").update({
         "ended_at": _now().isoformat(),
         "total_seconds": body.total_seconds,
-    }).eq("id", body.session_id).execute()
+    }).eq("id", body.session_id).is_("ended_at", "null").execute()
     return {"status": "ended"}

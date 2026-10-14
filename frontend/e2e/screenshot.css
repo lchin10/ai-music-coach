@@ -1,0 +1,5 @@
+/* Injected only while taking screenshots: hide dev-server chrome so the
+   baselines show the app and nothing else. */
+nextjs-portal {
+  display: none !important;
+}

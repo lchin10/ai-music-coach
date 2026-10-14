@@ -159,19 +159,55 @@ Supabase SQL editor) and `backend/app/schema.py`, the columns the backend expect
 `GET /sheet_music/schema` probes the live database against that list, so a
 forgotten migration fails loudly instead of at insert time.
 
-The frontend reads these tables directly under RLS; every write goes through the
-backend on the service-role key.
+The frontend reads these tables directly under RLS. Apart from the upload itself
+(the PDF in Storage and its `pieces` row), every write goes through the backend on
+the service-role key.
 
-### Tests
+### Security
+
+The service-role key bypasses RLS, so the backend does its own access control.
+Every endpoint except the health check requires the caller's Supabase access token
+(`Authorization: Bearer ...`). `backend/app/auth.py` verifies it and checks that
+every piece, session and section id in the request belongs to that user. No
+endpoint takes a `user_id`: identity comes from the token alone.
+
+## Tests
+
+**Backend**: endpoint and logic tests, offline, no tokens spent.
 
 ```bash
 cd backend
-python tests/test_graph.py       # validator, reducer and serialisation invariants
-python tests/test_graph_flow.py  # full graph with a stubbed model
-python tests/test_ladder.py      # ladder, scheduler, mastery, decay, remediation
+python -m pip install -e .[dev]
+python -m pytest
 ```
 
-All three run offline and spend no tokens.
+They cover auth on every endpoint (no token, bad token, another user's data),
+input validation, retries and double submits, and model failures. See
+[`backend/README.md`](backend/README.md#tests).
+
+**Frontend**: Playwright screenshot and flow tests in `frontend/e2e/`.
+
+```bash
+cd frontend
+npx playwright install chromium   # once
+npm run test:e2e                  # compare every page against its baseline
+npm run test:e2e:update           # re-baseline after an intended UI change
+```
+
+- Starts its own backend (:8100) and frontend (:3100), so a dev server you have
+  open is never reused with the wrong backend URL.
+- Signs in as a dedicated test account, `e2e-test@ai-music-coach.invalid`, on the
+  **production** Supabase project. It seeds one ready piece with fixed ids and
+  never runs Audiveris or a model. Every write and delete is filtered by that
+  account's id, and setup aborts if the resolved account is anyone else.
+- Each page is screenshotted on desktop and phone and compared pixel-exact against
+  `frontend/e2e/__screenshots__/`. Console errors, page errors and 4xx/5xx
+  responses also fail a test.
+- Failures land in `test-logs/` (gitignored): diffs, traces and the report.
+
+In Claude Code, a Stop hook (`.claude/hooks/check.py`) runs whichever suites
+cover the uncommitted changes, plus doc-drift checks, at the end of every turn.
+A failure blocks the turn and is copied to `test-logs/<timestamp>/`.
 
 ## Requirements
 
